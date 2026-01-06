@@ -12,6 +12,10 @@ import requests
 SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
+# --- CONSTANTE CRÍTICA ---
+# Assumimos que o Supabase converteu o nome da coluna para snake_case
+SUPABASE_CARIMBO_KEY = "carimbo_de_data_hora"
+
 # --- CONFIGURAÇÕES GERAIS (Mapeamento Planilhas e Abas) ---
 
 MAP_MIGRATION = {
@@ -31,7 +35,7 @@ MAP_MIGRATION = {
 
 # MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name)
 COLUNA_MAP = {
-    "Carimbo de data/hora": "Carimbo de data/hora", 
+    "Carimbo de data/hora": SUPABASE_CARIMBO_KEY, # <-- FIX: Mapeando para o snake_case
     "PRODUTO": "PRODUTO",
     "QUANTIDADE": "QUANTIDADE",
     "VALOR": "VALOR",
@@ -76,39 +80,33 @@ def format_datetime_for_supabase(carimbo_str):
     FIX CRÍTICO: Converte o formato 'DD/MM/YYYY HH:MM:SS' do Sheets (BR) 
     para 'YYYY-MM-DD HH:MM:SS' (ISO-like) para o Supabase/PostgREST.
     """
-    # Se não for uma string (ou se for vazia), retorna None
     if not isinstance(carimbo_str, str) or not carimbo_str.strip():
         return None
-    
-    # Se for o cabeçalho, retorna None
-    if carimbo_str.strip().lower() == "carimbo de data/hora":
-        return None 
         
     try:
-        # Tenta parsear o formato Brasileiro do Sheets (DD/MM/YYYY)
         dt_obj = datetime.strptime(carimbo_str.strip(), '%d/%m/%Y %H:%M:%S')
-        # Retorna o formato que o PostgREST (Supabase) consegue digerir
         return dt_obj.strftime('%Y-%m-%d %H:%M:%S')
     except ValueError:
-        # Caso o Sheets use um formato diferente ou a string não seja uma data, retorna None
         return None
 
 def enviar_registro_inteligente(registro, tabela_destino):
     """
     Tenta inserir um único registro. Primeiro, checa se o 'Carimbo de data/hora' já existe no Supabase.
     """
-    carimbo = registro.get("Carimbo de data/hora")
+    global SUPABASE_CARIMBO_KEY 
+
+    # Pega o valor usando a nova chave (snake_case)
+    carimbo_sheets_value = registro.get(SUPABASE_CARIMBO_KEY) 
     
     # 1. FORMATAR o Carimbo para uso no Supabase
-    carimbo_formatado = format_datetime_for_supabase(carimbo)
+    carimbo_formatado = format_datetime_for_supabase(carimbo_sheets_value)
     
-    # Se a formatação falhou (cabeçalho, linha vazia ou data inválida)
     if not carimbo_formatado:
-         # Isso deve pegar o cabeçalho e linhas vazias
-         return True # Retorna True para não quebrar a execução
+         return True # Linha vazia ou com data inválida no meio
 
-    # 2. CHECAGEM (SELECT) - Agora usando o carimbo FORMATADO
-    url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?Carimbo de data/hora=eq.{carimbo_formatado}"
+    # 2. CHECAGEM (SELECT) - Agora usando a chave correta no Supabase e o valor formatado
+    # FIX APLICADO AQUI: Uso de SUPABASE_CARIMBO_KEY na URL para evitar 400 Bad Request
+    url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?{SUPABASE_CARIMBO_KEY}=eq.{carimbo_formatado}"
     
     headers = {
         'apikey': SUPABASE_KEY,
@@ -120,15 +118,15 @@ def enviar_registro_inteligente(registro, tabela_destino):
         response_check.raise_for_status()
         
         if response_check.json():
-            print(f"⏩ IGNORADO: Registro com Carimbo '{carimbo}' já existe na tabela '{tabela_destino}'.")
+            print(f"⏩ IGNORADO: Registro com Carimbo '{carimbo_formatado}' já existe na tabela '{tabela_destino}'.")
             return True 
 
     except requests.exceptions.RequestException as e:
-        print(f"❌ ERRO na checagem do Supabase para o Carimbo '{carimbo}': {e}")
-        return False 
+        print(f"❌ ERRO na checagem do Supabase para o Carimbo '{carimbo_formatado}': {e}")
+        return False # Retorna False para que a linha não seja contada ou inserida.
 
-    # 3. INSERÇÃO (POST) - Usamos o carimbo formatado no payload
-    registro["Carimbo de data/hora"] = carimbo_formatado
+    # 3. INSERÇÃO (POST) - Atualiza o registro com o valor formatado (para garantir)
+    registro[SUPABASE_CARIMBO_KEY] = carimbo_formatado
     
     url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
     headers['Content-Type'] = 'application/json'
@@ -151,6 +149,8 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
     Lê do Sheets, processa, envia um por um para o Supabase (com checagem de duplicidade) 
     e NÃO deleta as linhas da origem.
     """
+    global SUPABASE_CARIMBO_KEY 
+
     print(f"\n--- Iniciando Migração Inteligente: {aba_origem_name.upper()} para Supabase ({tabela_destino_name}) ---")
     
     try:
@@ -191,12 +191,18 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
                     coluna_supa = COLUNA_MAP[header_sheet]
                     valor_processado = valor_sheet
                     
-                    if coluna_supa == "VALOR" or coluna_supa == "QUANTIDADE":
+                    if coluna_supa != SUPABASE_CARIMBO_KEY and (coluna_supa == "VALOR" or coluna_supa == "QUANTIDADE"):
                         valor_processado = clean_value(valor_sheet)
 
                     registro[coluna_supa] = valor_processado
 
             
+            # CHECK CRÍTICO: Se a linha é válida (tem o carimbo)
+            # Usa o nome da coluna no Supabase (SUPABASE_CARIMBO_KEY) para a checagem
+            carimbo = registro.get(SUPABASE_CARIMBO_KEY)
+            if not carimbo or str(carimbo).strip() == '':
+                continue 
+
             # Tentativa de Inserção Inteligente
             if registro and enviar_registro_inteligente(registro, tabela_destino_name):
                 inseridos_ou_ignorados += 1

@@ -2,8 +2,9 @@ import gspread
 import os
 import json
 import sys
+import time # NOVO: Para fazer pausas entre as chamadas (evita sobrecarga da API)
 from datetime import datetime
-import requests # NOVO: Para fazer requisições HTTP (API Supabase)
+import requests # Para fazer requisições HTTP (API Supabase)
 
 # ===============================================
 # 1. CONFIGURAÇÕES DO SUPABASE (Hardcoded)
@@ -62,21 +63,67 @@ def clean_value(valor):
     except ValueError:
         return valor  
 
+def enviar_registro_inteligente(registro, tabela_destino):
+    """
+    Tenta inserir um único registro. Primeiro, checa se o 'Carimbo de data/hora' já existe no Supabase.
+    """
+    carimbo = registro.get("Carimbo de data/hora")
+    if not carimbo:
+        print("⚠️ Ignorando registro sem 'Carimbo de data/hora' para checagem de duplicidade.")
+        return False
+    
+    # 1. CHECAGEM (SELECT) - Verifica se o carimbo já existe
+    # A URL de filtro é construída com o nome da coluna (que precisa estar no DB)
+    url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?Carimbo de data/hora=eq.{carimbo}"
+    
+    headers = {
+        'apikey': SUPABASE_KEY,
+        'Authorization': f'Bearer {SUPABASE_KEY}'
+    }
+
+    try:
+        response_check = requests.get(url_check, headers=headers)
+        response_check.raise_for_status()
+        
+        # Se a lista retornada não estiver vazia, o dado existe.
+        if response_check.json():
+            print(f"⏩ IGNORADO: Registro com Carimbo '{carimbo}' já existe na tabela '{tabela_destino}'.")
+            return True # O dado está lá, consideramos processado com sucesso (ignorando)
+
+    except requests.exceptions.RequestException as e:
+        # Se falhar na checagem, não insere.
+        print(f"❌ ERRO na checagem do Supabase para o Carimbo '{carimbo}': {e}")
+        return False 
+
+    # 2. INSERÇÃO (POST) - Se a checagem não encontrou nada
+    url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
+    headers['Content-Type'] = 'application/json'
+    headers['Prefer'] = 'return=minimal'
+    
+    try:
+        # Envia o registro como uma lista de um item (formato de inserção em lote de 1)
+        response_insert = requests.post(url_insert, headers=headers, json=[registro])
+        response_insert.raise_for_status()
+        print(f"✅ INSERIDO: Registro com Carimbo '{carimbo}' inserido em '{tabela_destino}'.")
+        return True
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ ERRO na inserção do Supabase. Resposta: {response_insert.text}. Erro: {e}")
+        return False
 
 # --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO ---
 
 def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name):
     """
-    Lê do Sheets, processa (limpa o VALOR) e envia para o Supabase em lote.
+    Lê do Sheets, processa, envia um por um para o Supabase (com checagem de duplicidade) 
+    e deleta as linhas processadas da origem.
     """
-    print(f"\n--- Iniciando Migração: {aba_origem_name.upper()} para Supabase ({tabela_destino_name}) ---")
+    print(f"\n--- Iniciando Migração Inteligente: {aba_origem_name.upper()} para Supabase ({tabela_destino_name}) ---")
     
     try:
-        # 1. Abre a aba de origem e pega todos os dados
         planilha_origem = gc.open_by_key(planilha_origem_id).worksheet(aba_origem_name)
         dados_do_mes = planilha_origem.get_all_values()
         
-        # 2. Verifica se há dados novos
         headers = dados_do_mes[0]
         dados_para_processar = dados_do_mes[1:] 
 
@@ -84,14 +131,15 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
             print(f"Não há novos dados na aba '{aba_origem_name}' para migrar.")
             return
 
-        payload_supa = []
-
-        # 3. Processamento e Limpeza (Cria o Payload JSON)
+        sucesso_ou_ignorado_count = 0
+        
+        # 3. Processamento, Limpeza e Inserção Inteligente (Iteração)
         for linha in dados_para_processar:
             registro = {}
+            
+            # Constrói o dicionário de registro (payload)
             for idx, valor_sheet in enumerate(linha):
                 header_sheet = headers[idx]
-                
                 if header_sheet in COLUNA_MAP:
                     coluna_supa = COLUNA_MAP[header_sheet]
                     valor_processado = valor_sheet
@@ -101,17 +149,24 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
                         valor_processado = clean_value(valor_sheet)
 
                     registro[coluna_supa] = valor_processado
-            
-            if registro:
-                payload_supa.append(registro)
 
-        # 4. Envio para o Supabase
-        enviar_para_supabase(payload_supa, tabela_destino_name)
+            # Tentativa de Inserção Inteligente
+            if registro and enviar_registro_inteligente(registro, tabela_destino_name):
+                # Se a inserção foi bem-sucedida OU o dado já existia (retornou True)
+                sucesso_ou_ignorado_count += 1
+            
+            # Pequena pausa para evitar sobrecarga da API
+            time.sleep(0.1) 
+
+
+        # 4. LIMPEZA/DELEÇÃO DAS LINHAS PROCESSADAS
+        if sucesso_ou_ignorado_count > 0:
+            # Apaga a quantidade de linhas que foram processadas com sucesso (ou ignoradas)
+            # A deleção começa na linha 2 (logo abaixo do cabeçalho) e apaga o número de linhas processadas.
+            planilha_origem.delete_rows(2, sucesso_ou_ignorado_count) 
+            print(f"✅ {sucesso_ou_ignorado_count} linhas processadas (inseridas ou ignoradas) e DELETADAS da aba '{aba_origem_name}'.")
         
-        # Manter o alerta para a limpeza manual (Governança)
-        print(f"=========================================================================")
-        print(f"!!! ATENÇÃO !!!: A limpeza da aba de origem ('{aba_origem_name}') NÃO FOI FEITA.")
-        print(f"=========================================================================")
+        print("--- MIGRAÇÃO INTELIGENTE CONCLUÍDA ---")
 
 
     except gspread.exceptions.WorksheetNotFound as e:
@@ -122,37 +177,12 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         raise
 
 
-def enviar_para_supabase(dados_para_copiar, tabela_destino):
-    """Faz a requisição POST para o Supabase."""
-    url = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
-
-    headers = {
-        'apikey': SUPABASE_KEY,
-        'Authorization': f'Bearer {SUPABASE_KEY}',
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal'
-    }
-
-    print(f"Enviando {len(dados_para_copiar)} registros para a tabela '{tabela_destino}'...")
-
-    response = requests.post(url, headers=headers, json=dados_para_copiar)
-
-    if response.status_code == 201:
-        print(f"Sucesso! {len(dados_para_copiar)} registros inseridos em '{tabela_destino}'.")
-    else:
-        print(f"ERRO Supabase ({tabela_destino}): Status {response.status_code}")
-        print(f"Resposta: {response.text}")
-        raise RuntimeError(f"Falha na inserção no Supabase.")
-
-    return True
-
-
 def main():
     """Função principal para orquestrar a execução."""
     
-    # Não há mais checagem de data. O script será executado sempre que o GitHub Actions mandar.
-
-    # Verifica se a execução foi forçada manualmente (governança de tempo, mantida)
+    # Removida a lógica de checagem de data (executa sempre que o GitHub Actions mandar).
+    
+    # Verifica se a execução foi forçada manualmente (governança de tempo)
     FORCA_EXECUCAO = os.environ.get('FORCA_EXECUCAO_MANUAL', 'false').lower() == 'true'
     
     if FORCA_EXECUCAO:

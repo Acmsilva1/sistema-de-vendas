@@ -12,19 +12,19 @@ import requests
 SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
-# --- CONSTANTES CRÍTICAS (Mapeamento HÍBRIDO) ---
-# Usamos o nome ORIGINAL do Sheets, pois o log mostrou que o PostgREST exige (Case Sensitive)
+# --- CONSTANTES CRÍTICAS (Mapeamento Totalmente Case Sensitive) ---
+# FIX FINAL: TODOS OS NOMES DEVEM SER IGUAIS AOS CABEÇALHOS DO SHEETS (Case-Sensitive, com espaços).
+# Isso garante que o payload JSON use as chaves EXATAS que o PostgREST espera.
 SUPABASE_CARIMBO_KEY = "Carimbo de data/hora" 
-
-# Outras Colunas: Assumimos que o PostgreSQL as forçou para MINÚSCULAS (snake_case)
-SUPABASE_PRODUTO_KEY = "produto"
-SUPABASE_QUANTIDADE_KEY = "quantidade"
-SUPABASE_VALOR_KEY = "valor"
-SUPABASE_COMPRADOR_KEY = "dados_do_comprador"
+SUPABASE_PRODUTO_KEY = "PRODUTO" 
+SUPABASE_QUANTIDADE_KEY = "QUANTIDADE"
+SUPABASE_VALOR_KEY = "VALOR"
+SUPABASE_COMPRADOR_KEY = "DADOS DO COMPRADOR"
 
 # --- CONFIGURAÇÕES GERAIS (Mapeamento Planilhas e Abas) ---
 
 MAP_MIGRATION = {
+    # ... (sem alterações)
     "vendas": {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
         "aba_nome": "VENDAS", 
@@ -37,15 +37,16 @@ MAP_MIGRATION = {
     } 
 }
 
-# MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name)
-# COLUNA 'TOTAL' REMOVIDA
+# MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name - AGORA TUDO CASE SENSITIVE)
+# COLUNA 'TOTAL' CONTINUA REMOVIDA
 COLUNA_MAP = {
     "Carimbo de data/hora": SUPABASE_CARIMBO_KEY, 
-    "PRODUTO": SUPABASE_PRODUTO_KEY,
+    "PRODUTO": SUPABASE_PRODUTO_KEY, # Mapeia 'PRODUTO' do Sheets para a chave 'PRODUTO' do Supabase
     "QUANTIDADE": SUPABASE_QUANTIDADE_KEY,
     "VALOR": SUPABASE_VALOR_KEY,
-    "SABORES": SUPABASE_PRODUTO_KEY, 
+    "SABORES": SUPABASE_PRODUTO_KEY, # Mapeia 'SABORES' (Sheets) para 'PRODUTO' (Supabase)
     "DADOS DO COMPRADOR": SUPABASE_COMPRADOR_KEY,
+    # "TOTAL": Removido
 }
 # -----------------------------------------------------------
 
@@ -97,7 +98,7 @@ def enviar_registro_inteligente(registro, tabela_destino):
     """
     Tenta inserir um único registro. Primeiro, checa se o 'Carimbo de data/hora' já existe no Supabase.
     """
-    global SUPABASE_CARIMBO_KEY 
+    global SUPABASE_CARIMBO_KEY, SUPABASE_VALOR_KEY, SUPABASE_QUANTIDADE_KEY
 
     carimbo_sheets_value = registro.get(SUPABASE_CARIMBO_KEY) 
     carimbo_formatado = format_datetime_for_supabase(carimbo_sheets_value)
@@ -105,8 +106,7 @@ def enviar_registro_inteligente(registro, tabela_destino):
     if not carimbo_formatado:
          return True 
 
-    # 1. CHECAGEM (SELECT) - Usando o nome original para o Carimbo (Carimbo de data/hora)
-    # A URL ainda pode dar 400 por causa de caracteres especiais, mas tentamos a inserção.
+    # 1. CHECAGEM (SELECT) 
     url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?{SUPABASE_CARIMBO_KEY}=eq.{carimbo_formatado}"
     
     headers = {
@@ -124,6 +124,7 @@ def enviar_registro_inteligente(registro, tabela_destino):
 
     except requests.exceptions.RequestException as e:
         if 'response_check' in locals() and response_check.status_code == 400:
+            # Mantemos o aviso de 400 e tentamos inserir
             print(f"⚠️ AVISO: Falha na checagem do Supabase (código 400) para o Carimbo '{carimbo_formatado}'. Tentando inserção...")
         else:
             print(f"❌ ERRO na checagem do Supabase. Erro: {e}")
@@ -138,6 +139,7 @@ def enviar_registro_inteligente(registro, tabela_destino):
     headers['Prefer'] = 'return=minimal'
     
     try:
+        # Enviamos o payload com todas as chaves Case Sensitive.
         response_insert = requests.post(url_insert, headers=headers, json=[registro])
         response_insert.raise_for_status()
         print(f"✅ INSERIDO: Registro com Carimbo '{carimbo_formatado}' inserido em '{tabela_destino}'.")
@@ -163,7 +165,6 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         
         headers = [h.strip() for h in dados_do_mes[0]] 
         if len(headers) > 0:
-            # Garante que o cabeçalho no Sheets é o padrão que o gspread nos devolve
             headers[0] = "Carimbo de data/hora" 
             
         dados_para_processar = dados_do_mes[1:] 
@@ -192,7 +193,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
                     coluna_supa = COLUNA_MAP[header_sheet]
                     valor_processado = valor_sheet
                     
-                    # Aplica clean_value apenas para colunas numéricas mapeadas para minúsculo
+                    # Aplica clean_value apenas para as colunas que são valores
                     if coluna_supa in [SUPABASE_VALOR_KEY, SUPABASE_QUANTIDADE_KEY]:
                         valor_processado = clean_value(valor_sheet)
 

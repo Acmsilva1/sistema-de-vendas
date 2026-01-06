@@ -27,20 +27,17 @@ MAP_MIGRATION = {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
         "aba_nome": "VENDAS", 
         "tabela_supa": "vendas",
-        # Mapeamento Específico de VENDAS (Ajustado para o seu Sheets)
         "map_indices": {
             0: SUPABASE_CARIMBO_KEY_DB,
-            1: SUPABASE_PRODUTO_KEY,     # SABORES -> produto
-            2: SUPABASE_COMPRADOR_KEY,   # DADOS DO COMPRADOR -> dados_do_comprador
-            3: SUPABASE_VALOR_KEY,       # VALOR -> valor
-            # Ignorando Coluna 4 (QUANTIDADE) e Coluna 5 (extra)
+            1: SUPABASE_PRODUTO_KEY,     
+            2: SUPABASE_COMPRADOR_KEY,   
+            3: SUPABASE_VALOR_KEY,       
         }
     }, 
     "gastos": {
         "planilha_id": "1y2YlMaaVMb0K4XlT7rx5s7X_2iNGL8dMAOSOpX4y_FA", 
         "aba_nome": "despesas", 
         "tabela_supa": "despesas",
-        # Mapeamento Específico de DESPESAS (Índices sequenciais)
         "map_indices": {
             0: SUPABASE_CARIMBO_KEY_DB,
             1: SUPABASE_PRODUTO_KEY, 
@@ -55,9 +52,12 @@ MAP_MIGRATION = {
 # --- FUNÇÕES AUXILIARES ---
 
 def autenticar_gspread():
+    """Autentica o gspread usando a variável de ambiente."""
     credenciais_json_string = os.environ.get('GSPREAD_SERVICE_ACCOUNT_CREDENTIALS')
+    
     if not credenciais_json_string:
         raise Exception("Variável de ambiente GSPREAD_SERVICE_ACCOUNT_CREDENTIALS não encontrada!")
+
     try:
         credenciais_dict = json.loads(credenciais_json_string)
         return gspread.service_account_from_dict(credenciais_dict)
@@ -65,9 +65,7 @@ def autenticar_gspread():
         raise Exception(f"Erro ao carregar ou autenticar credenciais JSON: {e}")
 
 def clean_value(valor):
-    """
-    Limpa R$, espaços e converte a vírgula decimal para ponto.
-    """
+    """Limpa R$, espaços e converte a vírgula decimal para ponto."""
     if not valor or str(valor).strip() == '':
         return None
     
@@ -96,8 +94,32 @@ def enviar_registro_simples(registro, tabela_destino):
     global SUPABASE_CARIMBO_KEY_DB 
 
     carimbo_formatado = registro.get(SUPABASE_CARIMBO_KEY_DB) 
+    
+    # --- 1. CHECAGEM DE DUPLICIDADE (GET) ---
+    # Filtra pela chave única (carimbo_data_hora) para ver se já existe
+    url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?{SUPABASE_CARIMBO_KEY_DB}=eq.{carimbo_formatado}&select=id"
+    headers_check = {
+        'apikey': SUPABASE_KEY,
+        'Authorization': f'Bearer {SUPABASE_KEY}',
+    }
+    
+    try:
+        response_check = requests.get(url_check, headers=headers_check)
+        response_check.raise_for_status()
+        
+        existing_records = response_check.json()
+        
+        if existing_records:
+            print(f"⚠️ IGNORADO: Registro com Carimbo '{carimbo_formatado}' já existe em '{tabela_destino}'.")
+            return True # Retorna sucesso porque o registro está no DB
+            
+    except requests.exceptions.RequestException as e:
+        # Se a checagem falhar, apenas logamos e tentamos o POST, priorizando não perder dados
+        print(f"❌ AVISO: Falha na checagem de duplicidade, tentando inserção. Erro: {e}")
+
+    # --- 2. INSERÇÃO (POST) ---
     url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
-    headers = {
+    headers_insert = {
         'apikey': SUPABASE_KEY,
         'Authorization': f'Bearer {SUPABASE_KEY}',
         'Content-Type': 'application/json',
@@ -105,7 +127,7 @@ def enviar_registro_simples(registro, tabela_destino):
     }
     
     try:
-        response_insert = requests.post(url_insert, headers=headers, json=[registro])
+        response_insert = requests.post(url_insert, headers=headers_insert, json=[registro])
         response_insert.raise_for_status()
         print(f"✅ INSERIDO: Registro com Carimbo '{carimbo_formatado}' inserido em '{tabela_destino}'.")
         return True
@@ -121,7 +143,7 @@ def fazer_migracao(gc, config):
     aba_origem_name = config["aba_nome"]
     planilha_origem_id = config["planilha_id"]
     tabela_destino_name = config["tabela_supa"]
-    index_map = config["map_indices"] # Pega o mapeamento específico
+    index_map = config["map_indices"] 
     
     global SUPABASE_CARIMBO_KEY_DB, SUPABASE_VALOR_KEY, SUPABASE_QUANTIDADE_KEY
 
@@ -134,7 +156,6 @@ def fazer_migracao(gc, config):
         # FIX SLICING: Dados começam na Linha 3 (índice 2)
         dados_para_processar = dados_do_mes[2:] 
 
-        print(f"DEBUG: Planilha '{aba_origem_name}' lida. Total de Linhas (Incl. Cabecalho e Título): {len(dados_do_mes)}")
         print(f"DEBUG: Total de Dados para Processar (Linha 3 em diante): {len(dados_para_processar)}")
 
         if len(dados_do_mes) > 1:
@@ -149,7 +170,6 @@ def fazer_migracao(gc, config):
         for linha in dados_para_processar:
             registro = {}
             
-            # Loop que mapeia pelo ÍNDICE
             for idx, valor_sheet in enumerate(linha):
                 
                 coluna_supa = index_map.get(idx)
@@ -157,17 +177,12 @@ def fazer_migracao(gc, config):
                 if coluna_supa:
                     valor_processado = valor_sheet
                     
-                    # 1. Limpeza de Valor: Aplica a limpeza no VALOR e QUANTIDADE
                     if coluna_supa == SUPABASE_VALOR_KEY or coluna_supa == SUPABASE_QUANTIDADE_KEY:
-                        # Se o valor retornado for None, o campo será omitido/nulo
                         valor_processado = clean_value(valor_sheet)
                     
-                    # 2. Formatação de Data/Hora: Aplica a formatação no Carimbo
                     elif coluna_supa == SUPABASE_CARIMBO_KEY_DB:
                          valor_processado = format_datetime_for_supabase(valor_sheet)
 
-                    # APENAS insere no registro se o valor_processado não for None, 
-                    # exceto se for o campo de texto (produto/comprador)
                     if valor_processado is not None or coluna_supa in [SUPABASE_PRODUTO_KEY, SUPABASE_COMPRADOR_KEY]:
                         registro[coluna_supa] = valor_processado
 
@@ -213,7 +228,6 @@ def main():
     gc = autenticar_gspread()
     
     for key, config in MAP_MIGRATION.items():
-        # Passa o config inteiro
         fazer_migracao(gc, config)
         
     print("\n✅ ORQUESTRAÇÃO DE MIGRAÇÃO CONCLUÍDA.")

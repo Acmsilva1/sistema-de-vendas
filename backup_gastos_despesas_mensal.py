@@ -19,7 +19,7 @@ MAP_MIGRATION = {
     # VENDAS
     "vendas": {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
-        "aba_nome": "vendas", # Assumindo que a aba dentro da planilha Vendas se chama 'vendas'
+        "aba_nome": "VENDAS", # Assumindo que a aba dentro da planilha Vendas se chama 'vendas'
         "tabela_supa": "vendas"
     }, 
     # DESPESAS (Gastos)

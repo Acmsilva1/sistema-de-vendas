@@ -36,7 +36,7 @@ MAP_MIGRATION = {
 }
 
 # MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name)
-# O cabeçalho do Sheets AGORA é mapeado para MAIÚSCULO, para garantir correspondência.
+# O cabeçalho do Sheets é mapeado para MAIÚSCULO, para garantir correspondência no loop.
 COLUNA_MAP = {
     "CARIMBO DE DATA/HORA": SUPABASE_CARIMBO_KEY_DB, 
     "PRODUTO": SUPABASE_PRODUTO_KEY, 
@@ -48,11 +48,15 @@ COLUNA_MAP = {
 # -----------------------------------------------------------
 
 
-# --- FUNÇÕES AUXILIARES (Inalteradas) ---
+# --- FUNÇÕES AUXILIARES ---
+
 def autenticar_gspread():
+    """Autentica o gspread usando a variável de ambiente."""
     credenciais_json_string = os.environ.get('GSPREAD_SERVICE_ACCOUNT_CREDENTIALS')
+    
     if not credenciais_json_string:
         raise Exception("Variável de ambiente GSPREAD_SERVICE_ACCOUNT_CREDENTIALS não encontrada!")
+
     try:
         credenciais_dict = json.loads(credenciais_json_string)
         return gspread.service_account_from_dict(credenciais_dict)
@@ -60,17 +64,27 @@ def autenticar_gspread():
         raise Exception(f"Erro ao carregar ou autenticar credenciais JSON: {e}")
 
 def clean_value(valor):
+    """Tradutor cultural: Converte valores com vírgula (R$) para o formato de ponto decimal (DB). Retorna float ou None."""
     if not valor or str(valor).strip() == '':
         return None
-    cleaned = str(valor).replace('.', '').replace(',', '.')
+    
+    cleaned = str(valor)
+    cleaned = cleaned.replace('.', '')
+    cleaned = cleaned.replace(',', '.')
+    
     try:
         return float(cleaned)
     except ValueError:
         return valor  
 
 def format_datetime_for_supabase(carimbo_str):
+    """
+    Converte o formato 'DD/MM/YYYY HH:MM:SS' (BR) 
+    para 'YYYY-MM-DDTHH:MM:SS' (ISO 8601 com 'T') para o Supabase.
+    """
     if not isinstance(carimbo_str, str) or not carimbo_str.strip():
         return None
+        
     try:
         dt_obj = datetime.strptime(carimbo_str.strip(), '%d/%m/%Y %H:%M:%S')
         return dt_obj.strftime('%Y-%m-%dT%H:%M:%S')
@@ -80,7 +94,9 @@ def format_datetime_for_supabase(carimbo_str):
 # --- FUNÇÃO PRINCIPAL DE INSERÇÃO ---
 
 def enviar_registro_simples(registro, tabela_destino):
-    
+    """
+    Função que insere diretamente, ignorando a checagem que causa 400.
+    """
     global SUPABASE_CARIMBO_KEY_DB 
 
     carimbo_sheets_value = registro.get(SUPABASE_CARIMBO_KEY_DB) 
@@ -107,10 +123,11 @@ def enviar_registro_simples(registro, tabela_destino):
         return True
 
     except requests.exceptions.RequestException as e:
+        # Se falhar, é um erro real de tipo/constraint, não de PGRST204 de nome
         print(f"❌ ERRO CRÍTICO na inserção do Supabase. Resposta: ***{response_insert.text}***. Erro: {e}")
         return False
 
-# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO ---
+# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO (DEBUG INCLUSO) ---
 
 def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name):
     """
@@ -127,18 +144,20 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         dados_do_mes = planilha_origem.get_all_values()
         
         # FIX CRÍTICO: Normaliza os headers do sheets para MAIÚSCULO e remove espaços
-        # para garantir que o mapeamento no COLUNA_MAP funcione
         headers = [h.strip().upper() for h in dados_do_mes[0]] 
         
-        # Correção: O Sheets ainda usa o nome original na primeira linha
+        # Correção: O Sheets ainda usa o nome original na primeira linha (índice 0)
         if len(headers) > 0:
-            # Reverte o primeiro item para o nome esperado no mapeamento, mas em MAIÚSCULO
             headers[0] = "CARIMBO DE DATA/HORA" 
             
         dados_para_processar = dados_do_mes[1:] 
 
         print(f"DEBUG: Planilha '{aba_origem_name}' lida. Total de Linhas (Incl. Cabecalho): {len(dados_do_mes)}")
         print(f"DEBUG: Total de Dados para Processar (Excl. Cabecalho): {len(dados_para_processar)}")
+
+        # ************ 📢 DEBUG CRÍTICO: IMPRIME OS HEADERS LIDOS ************
+        print(f"\n📢 DEBUG LIDO: HEADERS DO SHEETS PROCESSADOS: {headers}\n")
+        # *********************************************************************
 
         if not dados_para_processar:
             print(f"Não há novos dados na aba '{aba_origem_name}' para migrar.")
@@ -156,7 +175,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
                     
                 header_sheet = headers[idx]
                 
-                # FIX CRÍTICO: O header_sheet JÁ ESTÁ em MAIÚSCULO e limpo (sem espaços extras)
+                # O header_sheet JÁ ESTÁ em MAIÚSCULO e limpo (sem espaços extras)
                 if header_sheet in COLUNA_MAP:
                     coluna_supa = COLUNA_MAP[header_sheet]
                     valor_processado = valor_sheet
@@ -170,6 +189,10 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
             carimbo = registro.get(SUPABASE_CARIMBO_KEY_DB)
             if not carimbo or str(carimbo).strip() == '':
                 continue 
+
+            # ************ 📢 DEBUG CRÍTICO: IMPRIME O REGISTRO ANTES DE ENVIAR ************
+            print(f"📢 DEBUG ENVIADO: REGISTRO PRONTO PARA INSERÇÃO: {registro}")
+            # *****************************************************************************
 
             if registro and enviar_registro_simples(registro, tabela_destino_name):
                 inseridos_ou_ignorados += 1

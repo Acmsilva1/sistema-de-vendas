@@ -20,13 +20,13 @@ MAP_MIGRATION = {
     # VENDAS
     "vendas": {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
-        "aba_nome": "VENDAS", # <-- CORRIGIDO PARA O NOME PERSONALIZADO (ALL CAPS)
+        "aba_nome": "VENDAS", # NOME PERSONALIZADO CONFORME SUAS IMAGENS (ALL CAPS)
         "tabela_supa": "vendas"
     }, 
     # DESPESAS (Gastos)
     "gastos": {
         "planilha_id": "1y2YlMaaVMb0K4XlT7rx5s7X_2iNGL8dMAOSOpX4y_FA", 
-        "aba_nome": "despesas", # <-- CORRIGIDO PARA O NOME PERSONALIZADO (lowercase)
+        "aba_nome": "despesas", # NOME PERSONALIZADO CONFORME SUAS IMAGENS (lowercase)
         "tabela_supa": "despesas"
     } 
 }
@@ -37,7 +37,7 @@ COLUNA_MAP = {
     "PRODUTO": "PRODUTO",
     "QUANTIDADE": "QUANTIDADE",
     "VALOR": "VALOR",
-    "SABORES": "PRODUTO", 
+    "SABORES": "PRODUTO", # Mapeamento Adicional para Vendas
     "DADOS DO COMPRADOR": "DADOS_DO_COMPRADOR",
     "TOTAL": "TOTAL",
 }
@@ -81,6 +81,7 @@ def enviar_registro_inteligente(registro, tabela_destino):
     carimbo = registro.get("Carimbo de data/hora")
     
     # 1. CHECAGEM (SELECT) - Verifica se o carimbo já existe
+    # Note que a URL usa a chave do registro no DB (Carimbo de data/hora)
     url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?Carimbo de data/hora=eq.{carimbo}"
     
     headers = {
@@ -112,10 +113,11 @@ def enviar_registro_inteligente(registro, tabela_destino):
         return True
 
     except requests.exceptions.RequestException as e:
+        # Imprime o texto da resposta para debug do Supabase
         print(f"❌ ERRO na inserção do Supabase. Resposta: {response_insert.text}. Erro: {e}")
         return False
 
-# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO (COM DEBUG) ---
+# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO (COM FIX DE CABEÇALHO) ---
 
 def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name):
     """
@@ -128,9 +130,14 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         planilha_origem = gc.open_by_key(planilha_origem_id).worksheet(aba_origem_name)
         dados_do_mes = planilha_origem.get_all_values()
         
-        # FIX CRÍTICO: Limpa os espaços dos cabeçalhos do Sheets
-        # Usando .strip() para limpar espaços em branco que o Sheets pode adicionar
+        # 1. Limpeza e Força de Cabeçalho
         headers = [h.strip() for h in dados_do_mes[0]] 
+        
+        # FIX CRÍTICO: Garante que o primeiro cabeçalho seja o nome esperado.
+        # Isto corrige o problema de caracteres invisíveis que impediam o mapeamento.
+        if len(headers) > 0:
+            headers[0] = "Carimbo de data/hora" 
+            
         dados_para_processar = dados_do_mes[1:] 
 
         # ⚠️ LINHAS DE DEBUG CRÍTICAS (Para vermos se há dados)

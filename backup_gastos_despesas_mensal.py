@@ -15,18 +15,18 @@ SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 # --- CONFIGURAÇÕES GERAIS (Mapeamento Planilhas e Abas) ---
 
 # Mapeamento CRÍTICO: Define qual PLANILHA_ID e qual ABA_NOME usar para qual TABELA_SUPABASE
-# USANDO OS IDs CORRETOS E O NOME DA ABA DE RESPOSTAS DO FORM: 'Form Responses'
+# USANDO OS IDs CORRETOS E O NOME DA ABA CORRIGIDO: 'Form_Responses'
 MAP_MIGRATION = {
     # VENDAS
     "vendas": {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
-        "aba_nome": "Form Responses", 
+        "aba_nome": "Form_Responses", # <-- CORRIGIDO PARA UNDERSCORE
         "tabela_supa": "vendas"
     }, 
     # DESPESAS (Gastos)
     "gastos": {
         "planilha_id": "1y2YlMaaVMb0K4XlT7rx5s7X_2iNGL8dMAOSOpX4y_FA", 
-        "aba_nome": "Form Responses", 
+        "aba_nome": "Form_Responses", # <-- CORRIGIDO PARA UNDERSCORE
         "tabela_supa": "despesas"
     } 
 }
@@ -44,7 +44,7 @@ COLUNA_MAP = {
 # -----------------------------------------------------------
 
 
-# --- FUNÇÕES DE CONEXÃO E UTILIDADE (DEFINIDAS ANTES DE main()) ---
+# --- FUNÇÕES DE CONEXÃO E UTILIDADE ---
 
 def autenticar_gspread():
     """Autentica o gspread usando a variável de ambiente."""
@@ -65,7 +65,6 @@ def clean_value(valor):
         return None
     
     cleaned = str(valor)
-    # Remove separador de milhares e troca a vírgula pelo ponto
     cleaned = cleaned.replace('.', '')
     cleaned = cleaned.replace(',', '.')
     
@@ -187,7 +186,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
 
 
     except gspread.exceptions.WorksheetNotFound as e:
-        print(f"❌ ERRO DE ABA/WORKSHEET: A aba '{aba_origem_name}' não foi encontrada na planilha de ID: {planilha_origem_id}. CONFIRA SE O NOME DA ABA ESTÁ CORRETO (Provavelmente 'Form Responses').")
+        print(f"❌ ERRO DE ABA/WORKSHEET: A aba '{aba_origem_name}' não foi encontrada na planilha de ID: {planilha_origem_id}. CONFIRA SE O NOME DA ABA ESTÁ CORRETO (Provavelmente 'Form_Responses').")
         raise RuntimeError(f"Falha na validação da Planilha: {e}") 
     except Exception as e:
         print(f"❌ ERRO GRAVE durante a migração de {aba_origem_name} (Planilha ID: {planilha_origem_id}): {e}")

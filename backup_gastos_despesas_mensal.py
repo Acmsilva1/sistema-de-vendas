@@ -12,20 +12,19 @@ import requests
 SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
-# --- CONSTANTES CRÍTICAS (Mapeamento Totalmente Case Sensitive) ---
-# FIX CRÍTICO: Revertendo para o nome Case-Sensitive original, que o erro PGRST204 indica
-# que DEVE SER o nome da coluna no seu banco.
-SUPABASE_CARIMBO_KEY_DB = "Carimbo de data/hora" 
+# --- CONSTANTES CRÍTICAS (Mapeamento Pós-Governança) ---
+# FIX FINAL: Nome da coluna deve ser limpo no DB para contornar o PGRST204.
+SUPABASE_CARIMBO_KEY_DB = "carimbo_data_hora" 
 
-# Outras colunas permanecem Case Sensitive
+# Outras colunas permanecem Case Sensitive (PRODUTO, VALOR, QUANTIDADE)
 SUPABASE_PRODUTO_KEY = "PRODUTO" 
 SUPABASE_QUANTIDADE_KEY = "QUANTIDADE"
 SUPABASE_VALOR_KEY = "VALOR"
 SUPABASE_COMPRADOR_KEY = "DADOS DO COMPRADOR"
 
 # --- CONFIGURAÇÕES GERAIS (Mapeamento Planilhas e Abas) ---
+
 MAP_MIGRATION = {
-    # ... (mesmo mapa)
     "vendas": {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
         "aba_nome": "VENDAS", 
@@ -40,7 +39,8 @@ MAP_MIGRATION = {
 
 # MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name)
 COLUNA_MAP = {
-    "Carimbo de data/hora": SUPABASE_CARIMBO_KEY_DB, # O Sheets para o Supabase
+    # Mapeamos o cabeçalho do Sheets (Case Sensitive) para o nome LIMPO do DB
+    "Carimbo de data/hora": SUPABASE_CARIMBO_KEY_DB, 
     "PRODUTO": SUPABASE_PRODUTO_KEY, 
     "QUANTIDADE": SUPABASE_QUANTIDADE_KEY,
     "VALOR": SUPABASE_VALOR_KEY,
@@ -50,16 +50,11 @@ COLUNA_MAP = {
 # -----------------------------------------------------------
 
 
-# --- FUNÇÕES DE CONEXÃO E UTILIDADE (Mesmas Funções) ---
-# ... (funções auxiliares inalteradas: autenticar_gspread, clean_value, format_datetime_for_supabase)
-
+# --- FUNÇÕES AUXILIARES (Inalteradas) ---
 def autenticar_gspread():
-    """Autentica o gspread usando a variável de ambiente."""
     credenciais_json_string = os.environ.get('GSPREAD_SERVICE_ACCOUNT_CREDENTIALS')
-    
     if not credenciais_json_string:
         raise Exception("Variável de ambiente GSPREAD_SERVICE_ACCOUNT_CREDENTIALS não encontrada!")
-
     try:
         credenciais_dict = json.loads(credenciais_json_string)
         return gspread.service_account_from_dict(credenciais_dict)
@@ -67,37 +62,28 @@ def autenticar_gspread():
         raise Exception(f"Erro ao carregar ou autenticar credenciais JSON: {e}")
 
 def clean_value(valor):
-    """Tradutor cultural: Converte valores com vírgula (R$) para o formato de ponto decimal (DB). Retorna float ou None."""
     if not valor or str(valor).strip() == '':
         return None
-    
-    cleaned = str(valor)
-    cleaned = cleaned.replace('.', '')
-    cleaned = cleaned.replace(',', '.')
-    
+    cleaned = str(valor).replace('.', '').replace(',', '.')
     try:
         return float(cleaned)
     except ValueError:
         return valor  
 
 def format_datetime_for_supabase(carimbo_str):
-    """
-    Converte o formato 'DD/MM/YYYY HH:MM:SS' (BR) 
-    para 'YYYY-MM-DDTHH:MM:SS' (ISO 8601 com 'T') para o Supabase.
-    """
     if not isinstance(carimbo_str, str) or not carimbo_str.strip():
         return None
-        
     try:
         dt_obj = datetime.strptime(carimbo_str.strip(), '%d/%m/%Y %H:%M:%S')
         return dt_obj.strftime('%Y-%m-%dT%H:%M:%S')
     except ValueError:
         return None
 
+# --- FUNÇÃO PRINCIPAL DE INSERÇÃO (Sem Checagem) ---
 
 def enviar_registro_simples(registro, tabela_destino):
     """
-    FIX: Remove a checagem (SELECT) e vai direto para a Inserção (POST).
+    Função que insere diretamente, ignorando a checagem que causa 400.
     """
     global SUPABASE_CARIMBO_KEY_DB 
 
@@ -107,8 +93,6 @@ def enviar_registro_simples(registro, tabela_destino):
     if not carimbo_formatado:
          return True 
 
-    print(f"⚠️ AVISO: Inserindo Carimbo '{carimbo_formatado}'. Checagem de duplicidade desativada.")
-    
     # 2. INSERÇÃO (POST) - Payload
     registro[SUPABASE_CARIMBO_KEY_DB] = carimbo_formatado
     
@@ -127,6 +111,7 @@ def enviar_registro_simples(registro, tabela_destino):
         return True
 
     except requests.exceptions.RequestException as e:
+        # Se falhar na inserção (por exemplo, erro de tipo de dado ou violação de PK)
         print(f"❌ ERRO CRÍTICO na inserção do Supabase. Resposta: ***{response_insert.text}***. Erro: {e}")
         return False
 
@@ -185,7 +170,6 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
             if not carimbo or str(carimbo).strip() == '':
                 continue 
 
-            # Chamada da nova função
             if registro and enviar_registro_simples(registro, tabela_destino_name):
                 inseridos_ou_ignorados += 1
             

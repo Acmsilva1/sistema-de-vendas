@@ -12,26 +12,24 @@ import requests
 SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
-# --- CONSTANTES CRÍTICAS ---
-# FIX CRÍTICO: Revertendo para o nome EXATO (Case Sensitive) do Sheets.
-# O PostgREST é forçado a usar o nome exato do banco se ele foi criado com aspas duplas.
+# --- CONSTANTES CRÍTICAS (Mapeamento HÍBRIDO) ---
+# Usamos o nome ORIGINAL do Sheets, pois o log mostrou que o PostgREST exige (Case Sensitive)
 SUPABASE_CARIMBO_KEY = "Carimbo de data/hora" 
-SUPABASE_PRODUTO_KEY = "PRODUTO"
-SUPABASE_QUANTIDADE_KEY = "QUANTIDADE"
-SUPABASE_VALOR_KEY = "VALOR"
-SUPABASE_COMPRADOR_KEY = "DADOS DO COMPRADOR"
-SUPABASE_TOTAL_KEY = "TOTAL" # Revertendo o TOTAL que estava quebrando
+
+# Outras Colunas: Assumimos que o PostgreSQL as forçou para MINÚSCULAS (snake_case)
+SUPABASE_PRODUTO_KEY = "produto"
+SUPABASE_QUANTIDADE_KEY = "quantidade"
+SUPABASE_VALOR_KEY = "valor"
+SUPABASE_COMPRADOR_KEY = "dados_do_comprador"
 
 # --- CONFIGURAÇÕES GERAIS (Mapeamento Planilhas e Abas) ---
 
 MAP_MIGRATION = {
-    # VENDAS
     "vendas": {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
         "aba_nome": "VENDAS", 
         "tabela_supa": "vendas"
     }, 
-    # DESPESAS (Gastos)
     "gastos": {
         "planilha_id": "1y2YlMaaVMb0K4XlT7rx5s7X_2iNGL8dMAOSOpX4y_FA", 
         "aba_nome": "despesas", 
@@ -39,7 +37,8 @@ MAP_MIGRATION = {
     } 
 }
 
-# MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name - USANDO O NOME ORIGINAL DO SHEETS)
+# MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name)
+# COLUNA 'TOTAL' REMOVIDA
 COLUNA_MAP = {
     "Carimbo de data/hora": SUPABASE_CARIMBO_KEY, 
     "PRODUTO": SUPABASE_PRODUTO_KEY,
@@ -47,7 +46,6 @@ COLUNA_MAP = {
     "VALOR": SUPABASE_VALOR_KEY,
     "SABORES": SUPABASE_PRODUTO_KEY, 
     "DADOS DO COMPRADOR": SUPABASE_COMPRADOR_KEY,
-    "TOTAL": SUPABASE_TOTAL_KEY, 
 }
 # -----------------------------------------------------------
 
@@ -107,7 +105,8 @@ def enviar_registro_inteligente(registro, tabela_destino):
     if not carimbo_formatado:
          return True 
 
-    # 1. CHECAGEM (SELECT) - Usamos o nome ORIGINAL da coluna no Supabase
+    # 1. CHECAGEM (SELECT) - Usando o nome original para o Carimbo (Carimbo de data/hora)
+    # A URL ainda pode dar 400 por causa de caracteres especiais, mas tentamos a inserção.
     url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?{SUPABASE_CARIMBO_KEY}=eq.{carimbo_formatado}"
     
     headers = {
@@ -131,7 +130,7 @@ def enviar_registro_inteligente(registro, tabela_destino):
             return False 
         
     # 2. INSERÇÃO (POST) - Payload
-    # O payload deve ter as chaves com o nome EXATO da coluna
+    # Atualiza o valor do carimbo no payload com o valor formatado ISO 8601
     registro[SUPABASE_CARIMBO_KEY] = carimbo_formatado
     
     url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
@@ -154,7 +153,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
     """
     Lê do Sheets, processa, envia um por um para o Supabase.
     """
-    global SUPABASE_CARIMBO_KEY 
+    global SUPABASE_CARIMBO_KEY, SUPABASE_VALOR_KEY, SUPABASE_QUANTIDADE_KEY
 
     print(f"\n--- Iniciando Migração Inteligente: {aba_origem_name.upper()} para Supabase ({tabela_destino_name}) ---")
     
@@ -164,6 +163,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         
         headers = [h.strip() for h in dados_do_mes[0]] 
         if len(headers) > 0:
+            # Garante que o cabeçalho no Sheets é o padrão que o gspread nos devolve
             headers[0] = "Carimbo de data/hora" 
             
         dados_para_processar = dados_do_mes[1:] 
@@ -192,7 +192,8 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
                     coluna_supa = COLUNA_MAP[header_sheet]
                     valor_processado = valor_sheet
                     
-                    if coluna_supa != SUPABASE_CARIMBO_KEY and (coluna_supa == SUPABASE_VALOR_KEY or coluna_supa == SUPABASE_QUANTIDADE_KEY or coluna_supa == SUPABASE_TOTAL_KEY):
+                    # Aplica clean_value apenas para colunas numéricas mapeadas para minúsculo
+                    if coluna_supa in [SUPABASE_VALOR_KEY, SUPABASE_QUANTIDADE_KEY]:
                         valor_processado = clean_value(valor_sheet)
 
                     registro[coluna_supa] = valor_processado

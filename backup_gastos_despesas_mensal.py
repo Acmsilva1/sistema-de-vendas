@@ -12,13 +12,22 @@ import requests
 SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
-# --- CONFIGURAÇÕES GERAIS ---
-PLANILHA_ORIGEM_ID = "1LuqYrfR8ry_MqCS93Mpj9_7Vu0i9RUTomJU2n69bEug" # Vendas e Gastos (Planilha de Origem)
+# --- CONFIGURAÇÕES GERAIS (NOVA ESTRUTURA) ---
 
-# Mapeamento das Abas: {ABA_ORIGEM (minúscula): TABELA NO SUPABASE}
-MAP_ABAS = {
-    "vendas": "vendas", 
-    "gastos": "despesas" 
+# Mapeamento CRÍTICO: Define qual PLANILHA_ID e qual ABA_NOME usar para qual TABELA_SUPABASE
+MAP_MIGRATION = {
+    # VENDAS
+    "vendas": {
+        "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
+        "aba_nome": "vendas", # Assumindo que a aba dentro da planilha Vendas se chama 'vendas'
+        "tabela_supa": "vendas"
+    }, 
+    # DESPESAS (Gastos)
+    "gastos": {
+        "planilha_id": "1y2YlMaaVMb0K4XlT7rx5s7X_2iNGL8dMAOSOpX4y_FA", 
+        "aba_nome": "gastos", # Assumindo que a aba dentro da planilha Despesas se chama 'gastos'
+        "tabela_supa": "despesas"
+    } 
 }
 
 # MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name)
@@ -52,9 +61,7 @@ def clean_value(valor):
         return None
     
     cleaned = str(valor)
-    # 1. Remove separador de milhares (ponto)
     cleaned = cleaned.replace('.', '')
-    # 2. Troca a vírgula pelo ponto
     cleaned = cleaned.replace(',', '.')
     
     try:
@@ -69,7 +76,6 @@ def enviar_registro_inteligente(registro, tabela_destino):
     carimbo = registro.get("Carimbo de data/hora")
     
     # 1. CHECAGEM (SELECT) - Verifica se o carimbo já existe
-    # Note: O Supabase exige que o filtro seja URL-Encoded, mas strings simples funcionam
     url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?Carimbo de data/hora=eq.{carimbo}"
     
     headers = {
@@ -81,9 +87,7 @@ def enviar_registro_inteligente(registro, tabela_destino):
         response_check = requests.get(url_check, headers=headers)
         response_check.raise_for_status()
         
-        # Se a lista retornada não estiver vazia, o dado existe (Duplicado).
         if response_check.json():
-            # AVISO: Quando o DB está vazio, ele NÃO deve cair aqui.
             print(f"⏩ IGNORADO: Registro com Carimbo '{carimbo}' já existe na tabela '{tabela_destino}'.")
             return True 
 
@@ -103,11 +107,10 @@ def enviar_registro_inteligente(registro, tabela_destino):
         return True
 
     except requests.exceptions.RequestException as e:
-        # Se falhar na inserção, imprime a resposta do DB para diagnóstico.
         print(f"❌ ERRO na inserção do Supabase. Resposta: {response_insert.text}. Erro: {e}")
         return False
 
-# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO (COM TRATAMENTO DE CABEÇALHO) ---
+# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO ---
 
 def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name):
     """
@@ -120,7 +123,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         planilha_origem = gc.open_by_key(planilha_origem_id).worksheet(aba_origem_name)
         dados_do_mes = planilha_origem.get_all_values()
         
-        # ⚠️ FIX CRÍTICO: Limpa os espaços dos cabeçalhos do Sheets (ex: " Nome " -> "Nome")
+        # FIX CRÍTICO: Limpa os espaços dos cabeçalhos do Sheets
         headers = [h.strip() for h in dados_do_mes[0]] 
         dados_para_processar = dados_do_mes[1:] 
 
@@ -136,9 +139,8 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
             
             # Constrói o dicionário de registro (payload)
             for idx, valor_sheet in enumerate(linha):
-                header_sheet = headers[idx] # Usando o cabeçalho limpo
+                header_sheet = headers[idx]
                 
-                # O COLUNA_MAP usa a chave limpa
                 if header_sheet in COLUNA_MAP:
                     coluna_supa = COLUNA_MAP[header_sheet]
                     valor_processado = valor_sheet
@@ -149,7 +151,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
                     registro[coluna_supa] = valor_processado
 
             
-            # CHECK CRÍTICO: Se o Forms não preencheu o carimbo (linha vazia) ou se o dado está vazio.
+            # CHECK CRÍTICO: Se a linha é válida (tem o carimbo)
             carimbo = registro.get("Carimbo de data/hora")
             if not carimbo or str(carimbo).strip() == '':
                 # Se não tem carimbo, é uma linha vazia no Sheets.
@@ -190,9 +192,12 @@ def main():
     # 1. Autentica UMA VEZ no GSheets
     gc = autenticar_gspread()
     
-    # 2. Executa a função de migração para Vendas e Gastos
-    for origem, destino in MAP_ABAS.items():
-        fazer_migracao(gc, PLANILHA_ORIGEM_ID, origem, destino)
+    # 2. Executa a função de migração para Vendas e Gastos (AGORA USANDO OS IDs CORRETOS)
+    for key, config in MAP_MIGRATION.items():
+        fazer_migracao(gc, 
+                       config["planilha_id"], 
+                       config["aba_nome"], 
+                       config["tabela_supa"])
         
     print("\n✅ ORQUESTRAÇÃO DE MIGRAÇÃO CONCLUÍDA.")
 

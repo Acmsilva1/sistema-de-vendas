@@ -13,17 +13,16 @@ SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
 # --- CONSTANTES CRÍTICAS (Governança: TUDO MINÚSCULO/SNAKE_CASE) ---
-# FIX FINAL: O código assume que TODAS as colunas foram renomeadas no DB para minúsculo.
+# O código presume que as colunas no DB (Supabase) são:
 SUPABASE_CARIMBO_KEY_DB = "carimbo_data_hora" 
 SUPABASE_PRODUTO_KEY = "produto" 
 SUPABASE_QUANTIDADE_KEY = "quantidade"
 SUPABASE_VALOR_KEY = "valor"
-SUPABASE_COMPRADOR_KEY = "dados_do_comprador" # Limpando o nome
+SUPABASE_COMPRADOR_KEY = "dados_do_comprador" 
 
 # --- CONFIGURAÇÕES GERAIS (Mapeamento Planilhas e Abas) ---
 
 MAP_MIGRATION = {
-    # ... (sem alteração)
     "vendas": {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
         "aba_nome": "VENDAS", 
@@ -36,10 +35,11 @@ MAP_MIGRATION = {
     } 
 }
 
-# MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name - AGORA TUDO MINÚSCULO)
+# MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name)
+# O cabeçalho do Sheets AGORA é mapeado para MAIÚSCULO, para garantir correspondência.
 COLUNA_MAP = {
-    "Carimbo de data/hora": SUPABASE_CARIMBO_KEY_DB, 
-    "PRODUTO": SUPABASE_PRODUTO_KEY, # Mapeando do Sheets (Maiúsculo) para DB (Minúsculo)
+    "CARIMBO DE DATA/HORA": SUPABASE_CARIMBO_KEY_DB, 
+    "PRODUTO": SUPABASE_PRODUTO_KEY, 
     "QUANTIDADE": SUPABASE_QUANTIDADE_KEY,
     "VALOR": SUPABASE_VALOR_KEY,
     "SABORES": SUPABASE_PRODUTO_KEY, 
@@ -49,8 +49,6 @@ COLUNA_MAP = {
 
 
 # --- FUNÇÕES AUXILIARES (Inalteradas) ---
-# ... (autenticar_gspread, clean_value, format_datetime_for_supabase)
-
 def autenticar_gspread():
     credenciais_json_string = os.environ.get('GSPREAD_SERVICE_ACCOUNT_CREDENTIALS')
     if not credenciais_json_string:
@@ -79,12 +77,10 @@ def format_datetime_for_supabase(carimbo_str):
     except ValueError:
         return None
 
-# --- FUNÇÃO PRINCIPAL DE INSERÇÃO (Reutiliza a Lógica de Inserção Direta) ---
+# --- FUNÇÃO PRINCIPAL DE INSERÇÃO ---
 
 def enviar_registro_simples(registro, tabela_destino):
-    """
-    Função que insere diretamente, ignorando a checagem que causa 400.
-    """
+    
     global SUPABASE_CARIMBO_KEY_DB 
 
     carimbo_sheets_value = registro.get(SUPABASE_CARIMBO_KEY_DB) 
@@ -107,12 +103,10 @@ def enviar_registro_simples(registro, tabela_destino):
     try:
         response_insert = requests.post(url_insert, headers=headers, json=[registro])
         response_insert.raise_for_status()
-        # Não precisa mais do AVISO. Se chegou aqui, funcionou.
         print(f"✅ INSERIDO: Registro com Carimbo '{carimbo_formatado}' inserido em '{tabela_destino}'.")
         return True
 
     except requests.exceptions.RequestException as e:
-        # Se falhar, é um erro real de tipo/constraint, não de PGRST204 de nome
         print(f"❌ ERRO CRÍTICO na inserção do Supabase. Resposta: ***{response_insert.text}***. Erro: {e}")
         return False
 
@@ -132,9 +126,14 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         planilha_origem = gc.open_by_key(planilha_origem_id).worksheet(aba_origem_name)
         dados_do_mes = planilha_origem.get_all_values()
         
-        headers = [h.strip() for h in dados_do_mes[0]] 
+        # FIX CRÍTICO: Normaliza os headers do sheets para MAIÚSCULO e remove espaços
+        # para garantir que o mapeamento no COLUNA_MAP funcione
+        headers = [h.strip().upper() for h in dados_do_mes[0]] 
+        
+        # Correção: O Sheets ainda usa o nome original na primeira linha
         if len(headers) > 0:
-            headers[0] = SHEETS_CARIMBO_KEY 
+            # Reverte o primeiro item para o nome esperado no mapeamento, mas em MAIÚSCULO
+            headers[0] = "CARIMBO DE DATA/HORA" 
             
         dados_para_processar = dados_do_mes[1:] 
 
@@ -157,6 +156,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
                     
                 header_sheet = headers[idx]
                 
+                # FIX CRÍTICO: O header_sheet JÁ ESTÁ em MAIÚSCULO e limpo (sem espaços extras)
                 if header_sheet in COLUNA_MAP:
                     coluna_supa = COLUNA_MAP[header_sheet]
                     valor_processado = valor_sheet

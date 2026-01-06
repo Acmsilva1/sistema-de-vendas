@@ -25,7 +25,7 @@ MAP_MIGRATION = {
     # DESPESAS (Gastos)
     "gastos": {
         "planilha_id": "1y2YlMaaVMb0K4XlT7rx5s7X_2iNGL8dMAOSOpX4y_FA", 
-        "aba_nome": "gastos", # Assumindo que a aba dentro da planilha Despesas se chama 'gastos'
+        "aba_nome": "despesas", # Assumindo que a aba dentro da planilha Despesas se chama 'gastos'
         "tabela_supa": "despesas"
     } 
 }

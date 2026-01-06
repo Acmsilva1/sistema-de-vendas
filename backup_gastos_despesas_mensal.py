@@ -12,7 +12,7 @@ import requests
 # ===============================================
 SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 
-# 🚨 CHAVE PÚBLICA CORRIGIDA 🚨
+# CHAVE PÚBLICA CORRETA (Anônima)
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe" 
 
 # --- CONSTANTES CRÍTICAS (Governança: TUDO MINÚSCULO/SNAKE_CASE) ---
@@ -96,47 +96,43 @@ def enviar_registro_simples(registro, tabela_destino):
     
     global SUPABASE_CARIMBO_KEY_DB 
 
-    carimbo_formatado = registro.get(SUPABASE_CARIMBO_KEY_DB) 
+    carimbo_formatado_iso = registro.get(SUPABASE_CARIMBO_KEY_DB) 
     
-    # --- 1. CHECAGEM DE DUPLICIDADE (GET) ---
-    # FIX FINAL: Substitui 'T' por '%20' (URL encoding para espaço) na URL de consulta
-    carimbo_for_query = carimbo_formatado.replace('T', '%20') 
-    
-    # Filtra pela chave única (carimbo_data_hora)
-    url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?{SUPABASE_CARIMBO_KEY_DB}=eq.{carimbo_for_query}&select=id"
-    headers_check = {
-        'apikey': SUPABASE_KEY,
-        'Authorization': f'Bearer {SUPABASE_KEY}',
-    }
-    
-    try:
-        response_check = requests.get(url_check, headers=headers_check)
-        response_check.raise_for_status()
+    if not carimbo_formatado_iso:
+        print("AVISO: Registro sem carimbo de data/hora válido, ignorado.")
+        return False
         
-        existing_records = response_check.json()
-        
-        if existing_records:
-            print(f"⚠️ IGNORADO: Registro com Carimbo '{carimbo_formatado}' já existe em '{tabela_destino}'.")
-            return True 
-            
-    except requests.exceptions.RequestException as e:
-        # Se a checagem falhar, ainda tenta a inserção para não perder dados
-        print(f"❌ AVISO: Falha na checagem de duplicidade, tentando inserção. Erro: {e}")
-
-    # --- 2. INSERÇÃO (POST) ---
+    # --- 1. INSERÇÃO (UPSERT) ---
+    # Usamos on_conflict para tentar a inserção e, se a chave única (carimbo_data_hora)
+    # já existir, o Supabase ignora (fazendo o trabalho de anti-duplicação).
+    
     url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
     headers_insert = {
         'apikey': SUPABASE_KEY,
         'Authorization': f'Bearer {SUPABASE_KEY}',
         'Content-Type': 'application/json',
-        'Prefer': 'return=minimal'
+        # FIX CRÍTICO: Usa o método Upsert/On Conflict para ignorar duplicação no banco.
+        'Prefer': f'return=minimal, on_conflict={SUPABASE_CARIMBO_KEY_DB}' 
     }
     
     try:
         response_insert = requests.post(url_insert, headers=headers_insert, json=[registro])
         response_insert.raise_for_status()
-        print(f"✅ INSERIDO: Registro com Carimbo '{carimbo_formatado}' inserido em '{tabela_destino}'.")
-        return True
+
+        # 201 Created: Inserção de um novo registro.
+        # 204 No Content: Conflito detectado e ignorado (SUCCESS pelo on_conflict).
+        
+        if response_insert.status_code == 204:
+            print(f"⚠️ IGNORADO (ON CONFLICT): Registro com Carimbo '{carimbo_formatado_iso}' já existe em '{tabela_destino}'.")
+            return True
+        elif response_insert.status_code == 201:
+            print(f"✅ INSERIDO: Registro com Carimbo '{carimbo_formatado_iso}' inserido em '{tabela_destino}'.")
+            return True
+        else:
+            # Caso inesperado, mas tratado como processado.
+            print(f"✅ PROCESSADO (CÓDIGO {response_insert.status_code}): Registro processado com Carimbo '{carimbo_formatado_iso}'.")
+            return True
+
 
     except requests.exceptions.RequestException as e:
         print(f"❌ ERRO CRÍTICO na inserção do Supabase. Resposta: ***{response_insert.text}***. Erro: {e}")

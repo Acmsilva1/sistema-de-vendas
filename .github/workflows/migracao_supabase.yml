@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       force_run:
-        description: 'Forçar a execução (Define a variável FORCA_EXECUCAO_MANUAL como true)'
+        description: 'Forçar a execução (Ignora o agendamento e executa agora)'
         required: false
         default: 'false'
         type: choice
@@ -32,7 +32,7 @@ jobs:
       - name: Configurar Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # Versão estável do Python
+          python-version: '3.10'
           
       # Instalação das dependências
       - name: Instalar Dependências

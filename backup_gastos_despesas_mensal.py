@@ -3,6 +3,7 @@ import os
 import json
 import sys
 import time
+import re # 👈 NOVO: Necessário para a limpeza de valores
 from datetime import datetime
 import requests 
 
@@ -13,7 +14,7 @@ SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
 # --- CONSTANTES CRÍTICAS (Governança: TUDO MINÚSCULO/SNAKE_CASE) ---
-# O código presume que as colunas no DB (Supabase) são:
+# Presume que estas são as colunas em minúsculo no DB.
 SUPABASE_CARIMBO_KEY_DB = "carimbo_data_hora" 
 SUPABASE_PRODUTO_KEY = "produto" 
 SUPABASE_QUANTIDADE_KEY = "quantidade"
@@ -36,25 +37,21 @@ MAP_MIGRATION = {
 }
 
 # --- MAPA DE ÍNDICES (Sheets Index -> Supabase Column Name) ---
-# Baseado na ordem de colunas do Sheets (A, B, C, D...)
-# 0 (Coluna A) -> Carimbo de data/hora
-# 1 (Coluna B) -> PRODUTO/DESPESA
-# 2 (Coluna C) -> QUANTIDADE
-# 3 (Coluna D) -> VALOR
-# 4 (Coluna E) -> DADOS DO COMPRADOR/Outros (Ajuste se necessário!)
+# Mapeamento por índice para contornar headers vazios/mal formados no Sheets.
 INDEX_MAP = {
-    0: SUPABASE_CARIMBO_KEY_DB,
-    1: SUPABASE_PRODUTO_KEY, 
-    2: SUPABASE_QUANTIDADE_KEY,
-    3: SUPABASE_VALOR_KEY,
-    4: SUPABASE_COMPRADOR_KEY, 
+    0: SUPABASE_CARIMBO_KEY_DB, # Coluna A
+    1: SUPABASE_PRODUTO_KEY,    # Coluna B (Produto/Sabores/Despesa)
+    2: SUPABASE_QUANTIDADE_KEY, # Coluna C
+    3: SUPABASE_VALOR_KEY,      # Coluna D
+    4: SUPABASE_COMPRADOR_KEY,  # Coluna E (Ajuste se sua planilha for maior!)
 }
 # -----------------------------------------------------------
 
 
-# --- FUNÇÕES AUXILIARES (Inalteradas) ---
+# --- FUNÇÕES AUXILIARES ---
 
 def autenticar_gspread():
+    """Autentica o gspread usando a variável de ambiente."""
     credenciais_json_string = os.environ.get('GSPREAD_SERVICE_ACCOUNT_CREDENTIALS')
     
     if not credenciais_json_string:
@@ -67,28 +64,46 @@ def autenticar_gspread():
         raise Exception(f"Erro ao carregar ou autenticar credenciais JSON: {e}")
 
 def clean_value(valor):
+    """
+    FIX CRÍTICO 22P02: Limpa R$, espaços, e converte o separador decimal brasileiro (,) 
+    para o formato de ponto decimal (DB) aceito pelo Postgre Numeric.
+    """
     if not valor or str(valor).strip() == '':
         return None
-    cleaned = str(valor).replace('.', '').replace(',', '.')
+    
+    # Converte para string e remove o R$ e qualquer espaço.
+    cleaned = str(valor).strip()
+    cleaned = cleaned.replace('R$', '').replace(' ', '')
+    
+    # Remove qualquer ponto que possa ser separador de milhar
+    # e substitui a vírgula (decimal) por ponto
+    if ',' in cleaned:
+        cleaned = cleaned.replace('.', '').replace(',', '.')
+    
+    # Tenta converter para float
     try:
         return float(cleaned)
     except ValueError:
-        return valor  
+        # Se não for um número válido (ex: "Teste"), retorna None
+        return None  
 
 def format_datetime_for_supabase(carimbo_str):
+    """Converte o formato 'DD/MM/YYYY HH:MM:SS' para 'YYYY-MM-DDTHH:MM:SS'."""
     if not isinstance(carimbo_str, str) or not carimbo_str.strip():
         return None
     try:
+        # A lógica para tentar ambos os formatos de data e hora (BR ou ISO)
+        # pode ser complexa, mas vamos manter o formato BR assumido:
         dt_obj = datetime.strptime(carimbo_str.strip(), '%d/%m/%Y %H:%M:%S')
         return dt_obj.strftime('%Y-%m-%dT%H:%M:%S')
     except ValueError:
+        # Se falhar, tenta o formato alternativo (se for o caso) ou retorna None
         return None
 
 def enviar_registro_simples(registro, tabela_destino):
     
     global SUPABASE_CARIMBO_KEY_DB 
 
-    # O carimbo JÁ VEM formatado neste ponto
     carimbo_formatado = registro.get(SUPABASE_CARIMBO_KEY_DB) 
     
     url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
@@ -106,10 +121,11 @@ def enviar_registro_simples(registro, tabela_destino):
         return True
 
     except requests.exceptions.RequestException as e:
+        # Se falhar, imprime o erro específico
         print(f"❌ ERRO CRÍTICO na inserção do Supabase. Resposta: ***{response_insert.text}***. Erro: {e}")
         return False
 
-# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO (FIX DE SLICING APLICADO) ---
+# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO ---
 
 def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name):
     
@@ -121,19 +137,15 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         planilha_origem = gc.open_by_key(planilha_origem_id).worksheet(aba_origem_name)
         dados_do_mes = planilha_origem.get_all_values()
         
-        # 🚨 FIX CRÍTICO: Dados começam na Linha 3 (índice 2)
+        # FIX SLICING: Dados começam na Linha 3 (índice 2)
         dados_para_processar = dados_do_mes[2:] 
 
         print(f"DEBUG: Planilha '{aba_origem_name}' lida. Total de Linhas (Incl. Cabecalho e Título): {len(dados_do_mes)}")
         print(f"DEBUG: Total de Dados para Processar (Linha 3 em diante): {len(dados_para_processar)}")
 
-        # ************ 📢 DEBUG CRÍTICO: IMPRIME OS HEADERS (LINHA 2) ************
-        # Imprime a linha 2 (índice 1) para referência, mas não a usa para mapeamento
         if len(dados_do_mes) > 1:
             print(f"\n📢 DEBUG LIDO: CABEÇALHO (Linha 2): {dados_do_mes[1]}\n")
-        # *************************************************************************
         
-
         if not dados_para_processar:
             print(f"Não há novos dados na aba '{aba_origem_name}' para migrar.")
             return
@@ -143,7 +155,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         for linha in dados_para_processar:
             registro = {}
             
-            # Novo Loop: Mapeia pelo ÍNDICE (idx) em vez do Header
+            # Loop que mapeia pelo ÍNDICE
             for idx, valor_sheet in enumerate(linha):
                 
                 coluna_supa = INDEX_MAP.get(idx)
@@ -151,20 +163,19 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
                 if coluna_supa:
                     valor_processado = valor_sheet
                     
-                    # Aplica a limpeza apenas para as colunas de valor/quantidade
-                    if coluna_supa in [SUPABASE_VALOR_KEY, SUPABASE_QUANTIDADE_KEY]:
+                    # 1. Limpeza de Valor: Aplica a limpeza no VALOR e QUANTIDADE
+                    if coluna_supa == SUPABASE_VALOR_KEY or coluna_supa == SUPABASE_QUANTIDADE_KEY:
                         valor_processado = clean_value(valor_sheet)
                     
-                    # Se for a coluna de carimbo (índice 0), precisamos formatar AGORA.
+                    # 2. Formatação de Data/Hora: Aplica a formatação no Carimbo
                     elif coluna_supa == SUPABASE_CARIMBO_KEY_DB:
                          valor_processado = format_datetime_for_supabase(valor_sheet)
-
 
                     registro[coluna_supa] = valor_processado
 
             
             carimbo = registro.get(SUPABASE_CARIMBO_KEY_DB)
-            if not carimbo: # O valor já deve vir formatado aqui
+            if not carimbo: # Ignora se o carimbo (a chave) não foi preenchido ou está vazio/nulo
                 continue 
 
             # ************ 📢 DEBUG CRÍTICO: IMPRIME O REGISTRO ANTES DE ENVIAR ************

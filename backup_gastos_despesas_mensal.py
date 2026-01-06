@@ -85,7 +85,8 @@ def format_datetime_for_supabase(carimbo_str):
         return None
     try:
         dt_obj = datetime.strptime(carimbo_str.strip(), '%d/%m/%Y %H:%M:%S')
-        return dt_obj.strftime('%Y-%m-%dT%H:%M:%S')
+        # Retorna o formato ISO 8601 com 'T' para o corpo do POST
+        return dt_obj.strftime('%Y-%m-%dT%H:%M:%S') 
     except ValueError:
         return None
 
@@ -96,8 +97,11 @@ def enviar_registro_simples(registro, tabela_destino):
     carimbo_formatado = registro.get(SUPABASE_CARIMBO_KEY_DB) 
     
     # --- 1. CHECAGEM DE DUPLICIDADE (GET) ---
-    # Filtra pela chave única (carimbo_data_hora) para ver se já existe
-    url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?{SUPABASE_CARIMBO_KEY_DB}=eq.{carimbo_formatado}&select=id"
+    # 🚨 FIX CRÍTICO: Substitui 'T' por espaço ' ' na URL de consulta
+    carimbo_for_query = carimbo_formatado.replace('T', ' ')
+    
+    # Filtra pela chave única (carimbo_data_hora)
+    url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?{SUPABASE_CARIMBO_KEY_DB}=eq.{carimbo_for_query}&select=id"
     headers_check = {
         'apikey': SUPABASE_KEY,
         'Authorization': f'Bearer {SUPABASE_KEY}',
@@ -111,10 +115,9 @@ def enviar_registro_simples(registro, tabela_destino):
         
         if existing_records:
             print(f"⚠️ IGNORADO: Registro com Carimbo '{carimbo_formatado}' já existe em '{tabela_destino}'.")
-            return True # Retorna sucesso porque o registro está no DB
+            return True 
             
     except requests.exceptions.RequestException as e:
-        # Se a checagem falhar, apenas logamos e tentamos o POST, priorizando não perder dados
         print(f"❌ AVISO: Falha na checagem de duplicidade, tentando inserção. Erro: {e}")
 
     # --- 2. INSERÇÃO (POST) ---

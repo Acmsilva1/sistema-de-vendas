@@ -3,7 +3,7 @@ import os
 import json
 import sys
 import time
-import re # 👈 NOVO: Necessário para a limpeza de valores
+import re
 from datetime import datetime
 import requests 
 
@@ -14,7 +14,6 @@ SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
 # --- CONSTANTES CRÍTICAS (Governança: TUDO MINÚSCULO/SNAKE_CASE) ---
-# Presume que estas são as colunas em minúsculo no DB.
 SUPABASE_CARIMBO_KEY_DB = "carimbo_data_hora" 
 SUPABASE_PRODUTO_KEY = "produto" 
 SUPABASE_QUANTIDADE_KEY = "quantidade"
@@ -27,23 +26,28 @@ MAP_MIGRATION = {
     "vendas": {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
         "aba_nome": "VENDAS", 
-        "tabela_supa": "vendas"
+        "tabela_supa": "vendas",
+        # Mapeamento Específico de VENDAS (Ajustado para o seu Sheets)
+        "map_indices": {
+            0: SUPABASE_CARIMBO_KEY_DB,
+            1: SUPABASE_PRODUTO_KEY,     # SABORES -> produto
+            2: SUPABASE_COMPRADOR_KEY,   # DADOS DO COMPRADOR -> dados_do_comprador
+            3: SUPABASE_VALOR_KEY,       # VALOR -> valor
+            # Ignorando Coluna 4 (QUANTIDADE) e Coluna 5 (extra)
+        }
     }, 
     "gastos": {
         "planilha_id": "1y2YlMaaVMb0K4XlT7rx5s7X_2iNGL8dMAOSOpX4y_FA", 
         "aba_nome": "despesas", 
-        "tabela_supa": "despesas"
+        "tabela_supa": "despesas",
+        # Mapeamento Específico de DESPESAS (Índices sequenciais)
+        "map_indices": {
+            0: SUPABASE_CARIMBO_KEY_DB,
+            1: SUPABASE_PRODUTO_KEY, 
+            2: SUPABASE_QUANTIDADE_KEY,
+            3: SUPABASE_VALOR_KEY,
+        }
     } 
-}
-
-# --- MAPA DE ÍNDICES (Sheets Index -> Supabase Column Name) ---
-# Mapeamento por índice para contornar headers vazios/mal formados no Sheets.
-INDEX_MAP = {
-    0: SUPABASE_CARIMBO_KEY_DB, # Coluna A
-    1: SUPABASE_PRODUTO_KEY,    # Coluna B (Produto/Sabores/Despesa)
-    2: SUPABASE_QUANTIDADE_KEY, # Coluna C
-    3: SUPABASE_VALOR_KEY,      # Coluna D
-    4: SUPABASE_COMPRADOR_KEY,  # Coluna E (Ajuste se sua planilha for maior!)
 }
 # -----------------------------------------------------------
 
@@ -51,12 +55,9 @@ INDEX_MAP = {
 # --- FUNÇÕES AUXILIARES ---
 
 def autenticar_gspread():
-    """Autentica o gspread usando a variável de ambiente."""
     credenciais_json_string = os.environ.get('GSPREAD_SERVICE_ACCOUNT_CREDENTIALS')
-    
     if not credenciais_json_string:
         raise Exception("Variável de ambiente GSPREAD_SERVICE_ACCOUNT_CREDENTIALS não encontrada!")
-
     try:
         credenciais_dict = json.loads(credenciais_json_string)
         return gspread.service_account_from_dict(credenciais_dict)
@@ -65,26 +66,19 @@ def autenticar_gspread():
 
 def clean_value(valor):
     """
-    FIX CRÍTICO 22P02: Limpa R$, espaços, e converte o separador decimal brasileiro (,) 
-    para o formato de ponto decimal (DB) aceito pelo Postgre Numeric.
+    Limpa R$, espaços e converte a vírgula decimal para ponto.
     """
     if not valor or str(valor).strip() == '':
         return None
     
-    # Converte para string e remove o R$ e qualquer espaço.
-    cleaned = str(valor).strip()
-    cleaned = cleaned.replace('R$', '').replace(' ', '')
+    cleaned = str(valor).strip().replace('R$', '').replace(' ', '')
     
-    # Remove qualquer ponto que possa ser separador de milhar
-    # e substitui a vírgula (decimal) por ponto
     if ',' in cleaned:
         cleaned = cleaned.replace('.', '').replace(',', '.')
     
-    # Tenta converter para float
     try:
         return float(cleaned)
     except ValueError:
-        # Se não for um número válido (ex: "Teste"), retorna None
         return None  
 
 def format_datetime_for_supabase(carimbo_str):
@@ -92,12 +86,9 @@ def format_datetime_for_supabase(carimbo_str):
     if not isinstance(carimbo_str, str) or not carimbo_str.strip():
         return None
     try:
-        # A lógica para tentar ambos os formatos de data e hora (BR ou ISO)
-        # pode ser complexa, mas vamos manter o formato BR assumido:
         dt_obj = datetime.strptime(carimbo_str.strip(), '%d/%m/%Y %H:%M:%S')
         return dt_obj.strftime('%Y-%m-%dT%H:%M:%S')
     except ValueError:
-        # Se falhar, tenta o formato alternativo (se for o caso) ou retorna None
         return None
 
 def enviar_registro_simples(registro, tabela_destino):
@@ -105,7 +96,6 @@ def enviar_registro_simples(registro, tabela_destino):
     global SUPABASE_CARIMBO_KEY_DB 
 
     carimbo_formatado = registro.get(SUPABASE_CARIMBO_KEY_DB) 
-    
     url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
     headers = {
         'apikey': SUPABASE_KEY,
@@ -121,13 +111,17 @@ def enviar_registro_simples(registro, tabela_destino):
         return True
 
     except requests.exceptions.RequestException as e:
-        # Se falhar, imprime o erro específico
         print(f"❌ ERRO CRÍTICO na inserção do Supabase. Resposta: ***{response_insert.text}***. Erro: {e}")
         return False
 
 # --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO ---
 
-def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name):
+def fazer_migracao(gc, config):
+    
+    aba_origem_name = config["aba_nome"]
+    planilha_origem_id = config["planilha_id"]
+    tabela_destino_name = config["tabela_supa"]
+    index_map = config["map_indices"] # Pega o mapeamento específico
     
     global SUPABASE_CARIMBO_KEY_DB, SUPABASE_VALOR_KEY, SUPABASE_QUANTIDADE_KEY
 
@@ -158,29 +152,31 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
             # Loop que mapeia pelo ÍNDICE
             for idx, valor_sheet in enumerate(linha):
                 
-                coluna_supa = INDEX_MAP.get(idx)
+                coluna_supa = index_map.get(idx)
                 
                 if coluna_supa:
                     valor_processado = valor_sheet
                     
                     # 1. Limpeza de Valor: Aplica a limpeza no VALOR e QUANTIDADE
                     if coluna_supa == SUPABASE_VALOR_KEY or coluna_supa == SUPABASE_QUANTIDADE_KEY:
+                        # Se o valor retornado for None, o campo será omitido/nulo
                         valor_processado = clean_value(valor_sheet)
                     
                     # 2. Formatação de Data/Hora: Aplica a formatação no Carimbo
                     elif coluna_supa == SUPABASE_CARIMBO_KEY_DB:
                          valor_processado = format_datetime_for_supabase(valor_sheet)
 
-                    registro[coluna_supa] = valor_processado
+                    # APENAS insere no registro se o valor_processado não for None, 
+                    # exceto se for o campo de texto (produto/comprador)
+                    if valor_processado is not None or coluna_supa in [SUPABASE_PRODUTO_KEY, SUPABASE_COMPRADOR_KEY]:
+                        registro[coluna_supa] = valor_processado
 
             
             carimbo = registro.get(SUPABASE_CARIMBO_KEY_DB)
-            if not carimbo: # Ignora se o carimbo (a chave) não foi preenchido ou está vazio/nulo
+            if not carimbo:
                 continue 
 
-            # ************ 📢 DEBUG CRÍTICO: IMPRIME O REGISTRO ANTES DE ENVIAR ************
             print(f"📢 DEBUG ENVIADO: REGISTRO PRONTO PARA INSERÇÃO: {registro}")
-            # *****************************************************************************
 
             if registro and enviar_registro_simples(registro, tabela_destino_name):
                 inseridos_ou_ignorados += 1
@@ -197,10 +193,10 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
 
 
     except gspread.exceptions.WorksheetNotFound as e:
-        print(f"❌ ERRO DE ABA/WORKSHEET: A aba '{aba_origem_name}' não foi encontrada na planilha de ID: {planilha_origem_id}.")
+        print(f"❌ ERRO DE ABA/WORKSHEET: A aba '{aba_origem_name}' não foi encontrada.")
         raise RuntimeError(f"Falha na validação da Planilha: {e}") 
     except Exception as e:
-        print(f"❌ ERRO GRAVE durante a migração de {aba_origem_name} (Planilha ID: {planilha_origem_id}): {e}")
+        print(f"❌ ERRO GRAVE durante a migração de {aba_origem_name}: {e}")
         raise
 
 
@@ -217,10 +213,8 @@ def main():
     gc = autenticar_gspread()
     
     for key, config in MAP_MIGRATION.items():
-        fazer_migracao(gc, 
-                       config["planilha_id"], 
-                       config["aba_nome"], 
-                       config["tabela_supa"])
+        # Passa o config inteiro
+        fazer_migracao(gc, config)
         
     print("\n✅ ORQUESTRAÇÃO DE MIGRAÇÃO CONCLUÍDA.")
 

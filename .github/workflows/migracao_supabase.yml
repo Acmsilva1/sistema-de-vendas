@@ -1,0 +1,51 @@
+name: Agente Migração Sheets -> Supabase
+
+# 1. Quando o workflow deve ser executado
+on:
+  # Permite que você execute este workflow manualmente na aba 'Actions'
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Forçar a execução (Define a variável FORCA_EXECUCAO_MANUAL como true)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+  
+  # 2. Execução agendada (A CADA 2 HORAS)
+  # Cron Expression: '0 */2 * * *'
+  # Significa: No minuto 0, a cada 2 horas, em qualquer dia/mês/dia da semana.
+  schedule:
+    - cron: '0 */2 * * *' 
+
+jobs:
+  run_migration:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Configuração
+      - name: Checkout Código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10' # Versão estável do Python
+          
+      # Instalação das dependências
+      - name: Instalar Dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install gspread requests 
+
+      # 3. Execução do Script
+      - name: Executar Migração
+        run: python backup_gastos_despesas_mensal.py
+        env:
+          # Variável de ambiente CRÍTICA para autenticar no Google Sheets (Service Account)
+          GSPREAD_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GSPREAD_SERVICE_ACCOUNT_CREDENTIALS }}
+          
+          # Variável para forçar a execução manual
+          FORCA_EXECUCAO_MANUAL: ${{ github.event.inputs.force_run }}

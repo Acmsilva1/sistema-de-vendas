@@ -12,19 +12,18 @@ import requests
 SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
-# --- CONSTANTES CRÍTICAS (Mapeamento Pós-Governança) ---
-# FIX FINAL: Nome da coluna deve ser limpo no DB para contornar o PGRST204.
+# --- CONSTANTES CRÍTICAS (Governança: TUDO MINÚSCULO/SNAKE_CASE) ---
+# FIX FINAL: O código assume que TODAS as colunas foram renomeadas no DB para minúsculo.
 SUPABASE_CARIMBO_KEY_DB = "carimbo_data_hora" 
-
-# Outras colunas permanecem Case Sensitive (PRODUTO, VALOR, QUANTIDADE)
-SUPABASE_PRODUTO_KEY = "PRODUTO" 
-SUPABASE_QUANTIDADE_KEY = "QUANTIDADE"
-SUPABASE_VALOR_KEY = "VALOR"
-SUPABASE_COMPRADOR_KEY = "DADOS DO COMPRADOR"
+SUPABASE_PRODUTO_KEY = "produto" 
+SUPABASE_QUANTIDADE_KEY = "quantidade"
+SUPABASE_VALOR_KEY = "valor"
+SUPABASE_COMPRADOR_KEY = "dados_do_comprador" # Limpando o nome
 
 # --- CONFIGURAÇÕES GERAIS (Mapeamento Planilhas e Abas) ---
 
 MAP_MIGRATION = {
+    # ... (sem alteração)
     "vendas": {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
         "aba_nome": "VENDAS", 
@@ -37,11 +36,10 @@ MAP_MIGRATION = {
     } 
 }
 
-# MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name)
+# MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name - AGORA TUDO MINÚSCULO)
 COLUNA_MAP = {
-    # Mapeamos o cabeçalho do Sheets (Case Sensitive) para o nome LIMPO do DB
     "Carimbo de data/hora": SUPABASE_CARIMBO_KEY_DB, 
-    "PRODUTO": SUPABASE_PRODUTO_KEY, 
+    "PRODUTO": SUPABASE_PRODUTO_KEY, # Mapeando do Sheets (Maiúsculo) para DB (Minúsculo)
     "QUANTIDADE": SUPABASE_QUANTIDADE_KEY,
     "VALOR": SUPABASE_VALOR_KEY,
     "SABORES": SUPABASE_PRODUTO_KEY, 
@@ -51,6 +49,8 @@ COLUNA_MAP = {
 
 
 # --- FUNÇÕES AUXILIARES (Inalteradas) ---
+# ... (autenticar_gspread, clean_value, format_datetime_for_supabase)
+
 def autenticar_gspread():
     credenciais_json_string = os.environ.get('GSPREAD_SERVICE_ACCOUNT_CREDENTIALS')
     if not credenciais_json_string:
@@ -79,7 +79,7 @@ def format_datetime_for_supabase(carimbo_str):
     except ValueError:
         return None
 
-# --- FUNÇÃO PRINCIPAL DE INSERÇÃO (Sem Checagem) ---
+# --- FUNÇÃO PRINCIPAL DE INSERÇÃO (Reutiliza a Lógica de Inserção Direta) ---
 
 def enviar_registro_simples(registro, tabela_destino):
     """
@@ -107,11 +107,12 @@ def enviar_registro_simples(registro, tabela_destino):
     try:
         response_insert = requests.post(url_insert, headers=headers, json=[registro])
         response_insert.raise_for_status()
+        # Não precisa mais do AVISO. Se chegou aqui, funcionou.
         print(f"✅ INSERIDO: Registro com Carimbo '{carimbo_formatado}' inserido em '{tabela_destino}'.")
         return True
 
     except requests.exceptions.RequestException as e:
-        # Se falhar na inserção (por exemplo, erro de tipo de dado ou violação de PK)
+        # Se falhar, é um erro real de tipo/constraint, não de PGRST204 de nome
         print(f"❌ ERRO CRÍTICO na inserção do Supabase. Resposta: ***{response_insert.text}***. Erro: {e}")
         return False
 

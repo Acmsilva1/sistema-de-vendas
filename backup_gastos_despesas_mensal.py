@@ -2,9 +2,9 @@ import gspread
 import os
 import json
 import sys
-import time # Para fazer pausas entre as chamadas (evita sobrecarga da API)
+import time
 from datetime import datetime
-import requests # Para fazer requisições HTTP (API Supabase)
+import requests 
 
 # ===============================================
 # 1. CONFIGURAÇÕES DO SUPABASE 
@@ -69,6 +69,7 @@ def enviar_registro_inteligente(registro, tabela_destino):
     carimbo = registro.get("Carimbo de data/hora")
     
     # 1. CHECAGEM (SELECT) - Verifica se o carimbo já existe
+    # Note: O Supabase exige que o filtro seja URL-Encoded, mas strings simples funcionam
     url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?Carimbo de data/hora=eq.{carimbo}"
     
     headers = {
@@ -82,6 +83,7 @@ def enviar_registro_inteligente(registro, tabela_destino):
         
         # Se a lista retornada não estiver vazia, o dado existe (Duplicado).
         if response_check.json():
+            # AVISO: Quando o DB está vazio, ele NÃO deve cair aqui.
             print(f"⏩ IGNORADO: Registro com Carimbo '{carimbo}' já existe na tabela '{tabela_destino}'.")
             return True 
 
@@ -105,7 +107,7 @@ def enviar_registro_inteligente(registro, tabela_destino):
         print(f"❌ ERRO na inserção do Supabase. Resposta: {response_insert.text}. Erro: {e}")
         return False
 
-# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO (SEM DELEÇÃO DA ORIGEM) ---
+# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO (COM TRATAMENTO DE CABEÇALHO) ---
 
 def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name):
     """
@@ -118,7 +120,8 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         planilha_origem = gc.open_by_key(planilha_origem_id).worksheet(aba_origem_name)
         dados_do_mes = planilha_origem.get_all_values()
         
-        headers = dados_do_mes[0]
+        # ⚠️ FIX CRÍTICO: Limpa os espaços dos cabeçalhos do Sheets (ex: " Nome " -> "Nome")
+        headers = [h.strip() for h in dados_do_mes[0]] 
         dados_para_processar = dados_do_mes[1:] 
 
         if not dados_para_processar:
@@ -133,13 +136,14 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
             
             # Constrói o dicionário de registro (payload)
             for idx, valor_sheet in enumerate(linha):
-                header_sheet = headers[idx]
+                header_sheet = headers[idx] # Usando o cabeçalho limpo
                 
+                # O COLUNA_MAP usa a chave limpa
                 if header_sheet in COLUNA_MAP:
                     coluna_supa = COLUNA_MAP[header_sheet]
                     valor_processado = valor_sheet
                     
-                    if header_sheet.upper() == "VALOR":
+                    if coluna_supa == "VALOR":
                         valor_processado = clean_value(valor_sheet)
 
                     registro[coluna_supa] = valor_processado
@@ -148,19 +152,17 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
             # CHECK CRÍTICO: Se o Forms não preencheu o carimbo (linha vazia) ou se o dado está vazio.
             carimbo = registro.get("Carimbo de data/hora")
             if not carimbo or str(carimbo).strip() == '':
-                print("--- LINHA VAZIA IGNORADA ---")
-                continue # Pula para a próxima linha do Sheets.
+                # Se não tem carimbo, é uma linha vazia no Sheets.
+                continue 
 
             # Tentativa de Inserção Inteligente
             if registro and enviar_registro_inteligente(registro, tabela_destino_name):
-                # Se a inserção foi bem-sucedida OU o dado já existia (retornou True)
                 inseridos_ou_ignorados += 1
             
-            # Pequena pausa para evitar sobrecarga da API
             time.sleep(0.1) 
 
 
-        # 4. REMOVIDO: Limpeza/Deleção das linhas processadas (A limpeza é manual)
+        # 4. Finalização (Sem deleção)
         if inseridos_ou_ignorados > 0:
             print(f"✅ {inseridos_ou_ignorados} registros processados (inseridos ou ignorados) na aba '{aba_origem_name}'.")
 
@@ -177,8 +179,6 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
 
 def main():
     """Função principal para orquestrar a execução."""
-    
-    # Removida a lógica de checagem de data. O script será executado sempre que o GitHub Actions mandar.
     
     FORCA_EXECUCAO = os.environ.get('FORCA_EXECUCAO_MANUAL', 'false').lower() == 'true'
     

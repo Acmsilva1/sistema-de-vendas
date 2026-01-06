@@ -14,19 +14,17 @@ SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
 # --- CONFIGURAÇÕES GERAIS (Mapeamento Planilhas e Abas) ---
 
-# Mapeamento CRÍTICO: Define qual PLANILHA_ID e qual ABA_NOME usar para qual TABELA_SUPABASE
-# USANDO OS IDs CORRETOS E OS NOMES DAS ABAS PERSONALIZADAS: 'VENDAS' e 'despesas'
 MAP_MIGRATION = {
     # VENDAS
     "vendas": {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
-        "aba_nome": "VENDAS", # NOME PERSONALIZADO CONFORME SUAS IMAGENS (ALL CAPS)
+        "aba_nome": "VENDAS", 
         "tabela_supa": "vendas"
     }, 
     # DESPESAS (Gastos)
     "gastos": {
         "planilha_id": "1y2YlMaaVMb0K4XlT7rx5s7X_2iNGL8dMAOSOpX4y_FA", 
-        "aba_nome": "despesas", # NOME PERSONALIZADO CONFORME SUAS IMAGENS (lowercase)
+        "aba_nome": "despesas", 
         "tabela_supa": "despesas"
     } 
 }
@@ -37,7 +35,7 @@ COLUNA_MAP = {
     "PRODUTO": "PRODUTO",
     "QUANTIDADE": "QUANTIDADE",
     "VALOR": "VALOR",
-    "SABORES": "PRODUTO", # Mapeamento Adicional para Vendas
+    "SABORES": "PRODUTO", 
     "DADOS DO COMPRADOR": "DADOS_DO_COMPRADOR",
     "TOTAL": "TOTAL",
 }
@@ -65,7 +63,6 @@ def clean_value(valor):
         return None
     
     cleaned = str(valor)
-    # Remove separador de milhares e troca a vírgula pelo ponto
     cleaned = cleaned.replace('.', '')
     cleaned = cleaned.replace(',', '.')
     
@@ -74,15 +71,44 @@ def clean_value(valor):
     except ValueError:
         return valor  
 
+def format_datetime_for_supabase(carimbo_str):
+    """
+    FIX CRÍTICO: Converte o formato 'DD/MM/YYYY HH:MM:SS' do Sheets (BR) 
+    para 'YYYY-MM-DD HH:MM:SS' (ISO-like) para o Supabase/PostgREST.
+    """
+    # Se não for uma string (ou se for vazia), retorna None
+    if not isinstance(carimbo_str, str) or not carimbo_str.strip():
+        return None
+    
+    # Se for o cabeçalho, retorna None
+    if carimbo_str.strip().lower() == "carimbo de data/hora":
+        return None 
+        
+    try:
+        # Tenta parsear o formato Brasileiro do Sheets (DD/MM/YYYY)
+        dt_obj = datetime.strptime(carimbo_str.strip(), '%d/%m/%Y %H:%M:%S')
+        # Retorna o formato que o PostgREST (Supabase) consegue digerir
+        return dt_obj.strftime('%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        # Caso o Sheets use um formato diferente ou a string não seja uma data, retorna None
+        return None
+
 def enviar_registro_inteligente(registro, tabela_destino):
     """
     Tenta inserir um único registro. Primeiro, checa se o 'Carimbo de data/hora' já existe no Supabase.
     """
     carimbo = registro.get("Carimbo de data/hora")
     
-    # 1. CHECAGEM (SELECT) - Verifica se o carimbo já existe
-    # Note que a URL usa a chave do registro no DB (Carimbo de data/hora)
-    url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?Carimbo de data/hora=eq.{carimbo}"
+    # 1. FORMATAR o Carimbo para uso no Supabase
+    carimbo_formatado = format_datetime_for_supabase(carimbo)
+    
+    # Se a formatação falhou (cabeçalho, linha vazia ou data inválida)
+    if not carimbo_formatado:
+         # Isso deve pegar o cabeçalho e linhas vazias
+         return True # Retorna True para não quebrar a execução
+
+    # 2. CHECAGEM (SELECT) - Agora usando o carimbo FORMATADO
+    url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?Carimbo de data/hora=eq.{carimbo_formatado}"
     
     headers = {
         'apikey': SUPABASE_KEY,
@@ -101,7 +127,9 @@ def enviar_registro_inteligente(registro, tabela_destino):
         print(f"❌ ERRO na checagem do Supabase para o Carimbo '{carimbo}': {e}")
         return False 
 
-    # 2. INSERÇÃO (POST) - Se a checagem não encontrou nada
+    # 3. INSERÇÃO (POST) - Usamos o carimbo formatado no payload
+    registro["Carimbo de data/hora"] = carimbo_formatado
+    
     url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
     headers['Content-Type'] = 'application/json'
     headers['Prefer'] = 'return=minimal'
@@ -109,11 +137,10 @@ def enviar_registro_inteligente(registro, tabela_destino):
     try:
         response_insert = requests.post(url_insert, headers=headers, json=[registro])
         response_insert.raise_for_status()
-        print(f"✅ INSERIDO: Registro com Carimbo '{carimbo}' inserido em '{tabela_destino}'.")
+        print(f"✅ INSERIDO: Registro com Carimbo '{carimbo_formatado}' inserido em '{tabela_destino}'.")
         return True
 
     except requests.exceptions.RequestException as e:
-        # Imprime o texto da resposta para debug do Supabase
         print(f"❌ ERRO na inserção do Supabase. Resposta: {response_insert.text}. Erro: {e}")
         return False
 
@@ -134,13 +161,11 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         headers = [h.strip() for h in dados_do_mes[0]] 
         
         # FIX CRÍTICO: Garante que o primeiro cabeçalho seja o nome esperado.
-        # Isto corrige o problema de caracteres invisíveis que impediam o mapeamento.
         if len(headers) > 0:
             headers[0] = "Carimbo de data/hora" 
             
         dados_para_processar = dados_do_mes[1:] 
 
-        # ⚠️ LINHAS DE DEBUG CRÍTICAS (Para vermos se há dados)
         print(f"DEBUG: Planilha '{aba_origem_name}' lida. Total de Linhas (Incl. Cabecalho): {len(dados_do_mes)}")
         print(f"DEBUG: Total de Dados para Processar (Excl. Cabecalho): {len(dados_para_processar)}")
 
@@ -157,7 +182,6 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
             # Constrói o dicionário de registro (payload)
             for idx, valor_sheet in enumerate(linha):
                 
-                # Garante que não tentamos ler o índice fora do limite da linha
                 if idx >= len(headers):
                     continue
                     
@@ -173,11 +197,6 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
                     registro[coluna_supa] = valor_processado
 
             
-            # CHECK CRÍTICO: Se a linha é válida (tem o carimbo)
-            carimbo = registro.get("Carimbo de data/hora")
-            if not carimbo or str(carimbo).strip() == '':
-                continue 
-
             # Tentativa de Inserção Inteligente
             if registro and enviar_registro_inteligente(registro, tabela_destino_name):
                 inseridos_ou_ignorados += 1

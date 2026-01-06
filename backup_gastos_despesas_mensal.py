@@ -104,38 +104,57 @@ def enviar_registro_simples(registro, tabela_destino):
         
     # --- 1. INSERÇÃO (UPSERT) ---
     # Usamos on_conflict para tentar a inserção e, se a chave única (carimbo_data_hora)
-    # já existir, o Supabase ignora (fazendo o trabalho de anti-duplicação).
+    # já existir, o Supabase deveria ignorar. Se ele retornar 409 (Conflict), tratamos
+    # o 409 como sucesso de prevenção de duplicação.
     
     url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
     headers_insert = {
         'apikey': SUPABASE_KEY,
         'Authorization': f'Bearer {SUPABASE_KEY}',
         'Content-Type': 'application/json',
-        # FIX CRÍTICO: Usa o método Upsert/On Conflict para ignorar duplicação no banco.
+        # Configuração do Upsert para usar a chave única:
         'Prefer': f'return=minimal, on_conflict={SUPABASE_CARIMBO_KEY_DB}' 
     }
     
     try:
         response_insert = requests.post(url_insert, headers=headers_insert, json=[registro])
-        response_insert.raise_for_status()
+        status_code = response_insert.status_code
 
-        # 201 Created: Inserção de um novo registro.
-        # 204 No Content: Conflito detectado e ignorado (SUCCESS pelo on_conflict).
-        
-        if response_insert.status_code == 204:
-            print(f"⚠️ IGNORADO (ON CONFLICT): Registro com Carimbo '{carimbo_formatado_iso}' já existe em '{tabela_destino}'.")
-            return True
-        elif response_insert.status_code == 201:
+        # 201 Created: Novo registro inserido.
+        if status_code == 201:
             print(f"✅ INSERIDO: Registro com Carimbo '{carimbo_formatado_iso}' inserido em '{tabela_destino}'.")
             return True
-        else:
-            # Caso inesperado, mas tratado como processado.
-            print(f"✅ PROCESSADO (CÓDIGO {response_insert.status_code}): Registro processado com Carimbo '{carimbo_formatado_iso}'.")
+        
+        # 204 No Content: O on_conflict funcionou perfeitamente, sem erro.
+        elif status_code == 204:
+            print(f"⚠️ IGNORADO (ON CONFLICT - 204): Registro com Carimbo '{carimbo_formatado_iso}' já existe em '{tabela_destino}'.")
             return True
 
+        # 409 Conflict: O PostgREST não obedeceu ao Prefer ou falhou ao processar o Upsert,
+        # mas o banco barrou a duplicação. Tratamos como sucesso na prevenção.
+        elif status_code == 409:
+            
+            # Verificamos se o erro 409 é o de chave duplicada (código 23505)
+            response_text = response_insert.text
+            if "duplicate key value violates unique constraint" in response_text or "23505" in response_text:
+                print(f"⚠️ IGNORADO (DUPLICATE KEY - 409): Conflito de chave única '{carimbo_formatado_iso}' detectado e ignorado.")
+                return True
+            else:
+                # Se for 409 mas não for o erro 23505, é um erro real.
+                print(f"❌ ERRO CRÍTICO (409 Desconhecido). Resposta: ***{response_insert.text}***. Erro: Conflito.")
+                return False
+
+        # Se for qualquer outro código de erro (4xx ou 5xx)
+        elif status_code >= 400:
+            print(f"❌ ERRO CRÍTICO ({status_code}). Resposta: ***{response_insert.text}***. Erro: Falha na requisição.")
+            return False
+            
+        # Fallback para códigos de sucesso inesperados
+        print(f"✅ PROCESSADO (CÓDIGO {status_code}): Registro processado com Carimbo '{carimbo_formatado_iso}'.")
+        return True
 
     except requests.exceptions.RequestException as e:
-        print(f"❌ ERRO CRÍTICO na inserção do Supabase. Resposta: ***{response_insert.text}***. Erro: {e}")
+        print(f"❌ ERRO DE CONEXÃO. Erro: {e}")
         return False
 
 # --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO ---

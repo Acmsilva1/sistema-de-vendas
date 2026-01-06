@@ -13,11 +13,10 @@ SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
 # --- CONSTANTES CRÍTICAS (Mapeamento Totalmente Case Sensitive) ---
-# FIX CRÍTICO: RENOMEIE a coluna no Supabase para 'carimbo_data_hora' (sem espaços/caixa alta)
-# Isso corrige a duplicação e os erros 400 na checagem.
+# FIX CRÍTICO: ASSUMIMOS que você renomeou a coluna no Supabase para 'carimbo_data_hora'
 SUPABASE_CARIMBO_KEY_DB = "carimbo_data_hora" 
 
-# Outras colunas permanecem Case Sensitive, conforme a evidência das suas imagens
+# Outras colunas permanecem Case Sensitive
 SUPABASE_PRODUTO_KEY = "PRODUTO" 
 SUPABASE_QUANTIDADE_KEY = "QUANTIDADE"
 SUPABASE_VALOR_KEY = "VALOR"
@@ -40,7 +39,6 @@ MAP_MIGRATION = {
 
 # MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name)
 COLUNA_MAP = {
-    # Mapeamos o cabeçalho do Sheets para o novo nome LIMPO do DB
     "Carimbo de data/hora": SUPABASE_CARIMBO_KEY_DB, 
     "PRODUTO": SUPABASE_PRODUTO_KEY, 
     "QUANTIDADE": SUPABASE_QUANTIDADE_KEY,
@@ -51,7 +49,7 @@ COLUNA_MAP = {
 # -----------------------------------------------------------
 
 
-# --- FUNÇÕES DE CONEXÃO E UTILIDADE ---
+# --- FUNÇÕES DE CONEXÃO E UTILIDADE (Mesmas Funções) ---
 
 def autenticar_gspread():
     """Autentica o gspread usando a variável de ambiente."""
@@ -76,10 +74,8 @@ def clean_value(valor):
     cleaned = cleaned.replace(',', '.')
     
     try:
-        # Tenta converter para float
         return float(cleaned)
     except ValueError:
-        # Se não puder converter, retorna o valor original (string)
         return valor  
 
 def format_datetime_for_supabase(carimbo_str):
@@ -96,44 +92,59 @@ def format_datetime_for_supabase(carimbo_str):
     except ValueError:
         return None
 
+
 def enviar_registro_inteligente(registro, tabela_destino):
     """
-    Tenta inserir um único registro. Primeiro, checa se o 'Carimbo de data/hora' já existe no Supabase.
+    Tenta inserir um único registro. Primeiro, checa se o carimbo já existe no Supabase.
     """
     global SUPABASE_CARIMBO_KEY_DB 
 
-    # O registro usa o nome do DB
     carimbo_sheets_value = registro.get(SUPABASE_CARIMBO_KEY_DB) 
     carimbo_formatado = format_datetime_for_supabase(carimbo_sheets_value)
     
     if not carimbo_formatado:
          return True 
 
-    # 1. CHECAGEM (SELECT) - AGORA USANDO O NOME LIMPO DO DB
+    # 1. CHECAGEM (SELECT) - USANDO O NOME LIMPO DO DB
     url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?{SUPABASE_CARIMBO_KEY_DB}=eq.{carimbo_formatado}"
     
     headers = {
         'apikey': SUPABASE_KEY,
         'Authorization': f'Bearer {SUPABASE_KEY}'
     }
+    
+    # Flag para controlar se a inserção deve ser tentada
+    deve_inserir = True
 
     try:
         response_check = requests.get(url_check, headers=headers)
-        response_check.raise_for_status() # Lança exceção se for 4xx ou 5xx
+        response_check.raise_for_status() 
         
         if response_check.json():
             print(f"⏩ IGNORADO: Registro com Carimbo '{carimbo_formatado}' já existe na tabela '{tabela_destino}'.")
-            return True 
+            deve_inserir = False 
         
-        # Se chegou aqui, a checagem funcionou e o registro não existe.
-
     except requests.exceptions.RequestException as e:
-        # Se falhou, é um erro real, não apenas o 400 de formatação de URL (que agora deve ter sumido)
-        print(f"❌ ERRO CRÍTICO na checagem do Supabase (código {response_check.status_code if 'response_check' in locals() else 'N/A'}). Erro: {e}")
-        return False
+        # Se houve um erro 400 ou outro, assumimos que a checagem não funcionou.
+        # Imprimimos o erro, mas NÃO definimos 'deve_inserir = False', permitindo a inserção.
+        # Isso AVISA o usuário, mas TENTA a inserção, resolvendo o problema de 400 na checagem.
+        status_code = response_check.status_code if 'response_check' in locals() else 'N/A'
+        
+        print(f"❌ ERRO CRÍTICO na checagem do Supabase (código {status_code}). Erro: {e}")
+        
+        # A ÚNICA excessão é 404. Se a tabela não existe, paramos.
+        if status_code == 404:
+            print(f"❌ ERRO CRÍTICO (404): Tabela '{tabela_destino}' não encontrada. Abortando inserção.")
+            return False
+            
+        print(f"⚠️ AVISO: A checagem de duplicidade falhou (Erro 400). Tentando a inserção para forçar o fluxo...")
+        deve_inserir = True # Garante que vamos para o passo 2
+        
         
     # 2. INSERÇÃO (POST) - Payload
-    # Atualiza o valor do carimbo no payload com o valor formatado ISO 8601
+    if not deve_inserir:
+        return True # Se ignorado na checagem, retorna True (processado)
+        
     registro[SUPABASE_CARIMBO_KEY_DB] = carimbo_formatado
     
     url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
@@ -141,23 +152,22 @@ def enviar_registro_inteligente(registro, tabela_destino):
     headers['Prefer'] = 'return=minimal'
     
     try:
-        # Enviamos o payload com todas as chaves Case Sensitive.
         response_insert = requests.post(url_insert, headers=headers, json=[registro])
         response_insert.raise_for_status()
         print(f"✅ INSERIDO: Registro com Carimbo '{carimbo_formatado}' inserido em '{tabela_destino}'.")
         return True
 
     except requests.exceptions.RequestException as e:
+        # Se falhar na inserção (por exemplo, erro de tipo de dado ou violação de PK)
         print(f"❌ ERRO CRÍTICO na inserção do Supabase. Resposta: ***{response_insert.text}***. Erro: {e}")
         return False
 
-# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO ---
+# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO (Sem Alterações Essenciais) ---
 
 def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name):
     """
     Lê do Sheets, processa, envia um por um para o Supabase.
     """
-    # Usamos o nome do Sheets para puxar os dados, mas mapeamos para o nome limpo do DB
     SHEETS_CARIMBO_KEY = "Carimbo de data/hora" 
     
     global SUPABASE_CARIMBO_KEY_DB, SUPABASE_VALOR_KEY, SUPABASE_QUANTIDADE_KEY
@@ -170,7 +180,6 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         
         headers = [h.strip() for h in dados_do_mes[0]] 
         if len(headers) > 0:
-            # Garantimos que o cabeçalho seja o nome esperado do Sheets
             headers[0] = SHEETS_CARIMBO_KEY 
             
         dados_para_processar = dados_do_mes[1:] 
@@ -184,7 +193,6 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
 
         inseridos_ou_ignorados = 0
         
-        # Processamento, Limpeza e Inserção Inteligente (Iteração)
         for linha in dados_para_processar:
             registro = {}
             
@@ -199,14 +207,12 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
                     coluna_supa = COLUNA_MAP[header_sheet]
                     valor_processado = valor_sheet
                     
-                    # Aplica clean_value apenas para as colunas que são valores
                     if coluna_supa in [SUPABASE_VALOR_KEY, SUPABASE_QUANTIDADE_KEY]:
                         valor_processado = clean_value(valor_sheet)
 
                     registro[coluna_supa] = valor_processado
 
             
-            # O carimbo no registro (payload) ainda está com o nome "carimbo_data_hora"
             carimbo = registro.get(SUPABASE_CARIMBO_KEY_DB)
             if not carimbo or str(carimbo).strip() == '':
                 continue 

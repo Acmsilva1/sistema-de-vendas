@@ -11,7 +11,7 @@ import requests
 # 1. CONFIGURAÇÕES DO SUPABASE 
 # ===============================================
 SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
-SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
+SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOs"
 
 # --- CONSTANTES CRÍTICAS (Governança: TUDO MINÚSCULO/SNAKE_CASE) ---
 SUPABASE_CARIMBO_KEY_DB = "carimbo_data_hora" 
@@ -80,12 +80,12 @@ def clean_value(valor):
         return None  
 
 def format_datetime_for_supabase(carimbo_str):
-    """Converte o formato 'DD/MM/YYYY HH:MM:SS' para 'YYYY-MM-DDTHH:MM:SS'."""
+    """Converte o formato 'DD/MM/YYYY HH:MM:SS' para 'YYYY-MM-DDTHH:MM:SS' (com T)."""
     if not isinstance(carimbo_str, str) or not carimbo_str.strip():
         return None
     try:
         dt_obj = datetime.strptime(carimbo_str.strip(), '%d/%m/%Y %H:%M:%S')
-        # Retorna o formato ISO 8601 com 'T' para o corpo do POST
+        # Retorna o formato ISO 8601 com 'T'
         return dt_obj.strftime('%Y-%m-%dT%H:%M:%S') 
     except ValueError:
         return None
@@ -97,8 +97,8 @@ def enviar_registro_simples(registro, tabela_destino):
     carimbo_formatado = registro.get(SUPABASE_CARIMBO_KEY_DB) 
     
     # --- 1. CHECAGEM DE DUPLICIDADE (GET) ---
-    # 🚨 FIX CRÍTICO: Substitui 'T' por espaço ' ' na URL de consulta
-    carimbo_for_query = carimbo_formatado.replace('T', ' ')
+    # 🚨 FIX CRÍTICO FINAL: Substitui 'T' por '%20' (URL encoding para espaço) na URL de consulta
+    carimbo_for_query = carimbo_formatado.replace('T', '%20') 
     
     # Filtra pela chave única (carimbo_data_hora)
     url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?{SUPABASE_CARIMBO_KEY_DB}=eq.{carimbo_for_query}&select=id"
@@ -156,7 +156,6 @@ def fazer_migracao(gc, config):
         planilha_origem = gc.open_by_key(planilha_origem_id).worksheet(aba_origem_name)
         dados_do_mes = planilha_origem.get_all_values()
         
-        # FIX SLICING: Dados começam na Linha 3 (índice 2)
         dados_para_processar = dados_do_mes[2:] 
 
         print(f"DEBUG: Total de Dados para Processar (Linha 3 em diante): {len(dados_para_processar)}")

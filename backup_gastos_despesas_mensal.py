@@ -13,8 +13,9 @@ SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
 # --- CONSTANTES CRÍTICAS (Mapeamento Totalmente Case Sensitive) ---
-# FIX CRÍTICO: ASSUMIMOS que você renomeou a coluna no Supabase para 'carimbo_data_hora'
-SUPABASE_CARIMBO_KEY_DB = "carimbo_data_hora" 
+# FIX CRÍTICO: Revertendo para o nome Case-Sensitive original, que o erro PGRST204 indica
+# que DEVE SER o nome da coluna no seu banco.
+SUPABASE_CARIMBO_KEY_DB = "Carimbo de data/hora" 
 
 # Outras colunas permanecem Case Sensitive
 SUPABASE_PRODUTO_KEY = "PRODUTO" 
@@ -23,8 +24,8 @@ SUPABASE_VALOR_KEY = "VALOR"
 SUPABASE_COMPRADOR_KEY = "DADOS DO COMPRADOR"
 
 # --- CONFIGURAÇÕES GERAIS (Mapeamento Planilhas e Abas) ---
-
 MAP_MIGRATION = {
+    # ... (mesmo mapa)
     "vendas": {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
         "aba_nome": "VENDAS", 
@@ -39,7 +40,7 @@ MAP_MIGRATION = {
 
 # MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name)
 COLUNA_MAP = {
-    "Carimbo de data/hora": SUPABASE_CARIMBO_KEY_DB, 
+    "Carimbo de data/hora": SUPABASE_CARIMBO_KEY_DB, # O Sheets para o Supabase
     "PRODUTO": SUPABASE_PRODUTO_KEY, 
     "QUANTIDADE": SUPABASE_QUANTIDADE_KEY,
     "VALOR": SUPABASE_VALOR_KEY,
@@ -50,6 +51,7 @@ COLUNA_MAP = {
 
 
 # --- FUNÇÕES DE CONEXÃO E UTILIDADE (Mesmas Funções) ---
+# ... (funções auxiliares inalteradas: autenticar_gspread, clean_value, format_datetime_for_supabase)
 
 def autenticar_gspread():
     """Autentica o gspread usando a variável de ambiente."""
@@ -93,9 +95,9 @@ def format_datetime_for_supabase(carimbo_str):
         return None
 
 
-def enviar_registro_inteligente(registro, tabela_destino):
+def enviar_registro_simples(registro, tabela_destino):
     """
-    Tenta inserir um único registro. Primeiro, checa se o carimbo já existe no Supabase.
+    FIX: Remove a checagem (SELECT) e vai direto para a Inserção (POST).
     """
     global SUPABASE_CARIMBO_KEY_DB 
 
@@ -105,51 +107,18 @@ def enviar_registro_inteligente(registro, tabela_destino):
     if not carimbo_formatado:
          return True 
 
-    # 1. CHECAGEM (SELECT) - USANDO O NOME LIMPO DO DB
-    url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?{SUPABASE_CARIMBO_KEY_DB}=eq.{carimbo_formatado}"
+    print(f"⚠️ AVISO: Inserindo Carimbo '{carimbo_formatado}'. Checagem de duplicidade desativada.")
     
-    headers = {
-        'apikey': SUPABASE_KEY,
-        'Authorization': f'Bearer {SUPABASE_KEY}'
-    }
-    
-    # Flag para controlar se a inserção deve ser tentada
-    deve_inserir = True
-
-    try:
-        response_check = requests.get(url_check, headers=headers)
-        response_check.raise_for_status() 
-        
-        if response_check.json():
-            print(f"⏩ IGNORADO: Registro com Carimbo '{carimbo_formatado}' já existe na tabela '{tabela_destino}'.")
-            deve_inserir = False 
-        
-    except requests.exceptions.RequestException as e:
-        # Se houve um erro 400 ou outro, assumimos que a checagem não funcionou.
-        # Imprimimos o erro, mas NÃO definimos 'deve_inserir = False', permitindo a inserção.
-        # Isso AVISA o usuário, mas TENTA a inserção, resolvendo o problema de 400 na checagem.
-        status_code = response_check.status_code if 'response_check' in locals() else 'N/A'
-        
-        print(f"❌ ERRO CRÍTICO na checagem do Supabase (código {status_code}). Erro: {e}")
-        
-        # A ÚNICA excessão é 404. Se a tabela não existe, paramos.
-        if status_code == 404:
-            print(f"❌ ERRO CRÍTICO (404): Tabela '{tabela_destino}' não encontrada. Abortando inserção.")
-            return False
-            
-        print(f"⚠️ AVISO: A checagem de duplicidade falhou (Erro 400). Tentando a inserção para forçar o fluxo...")
-        deve_inserir = True # Garante que vamos para o passo 2
-        
-        
     # 2. INSERÇÃO (POST) - Payload
-    if not deve_inserir:
-        return True # Se ignorado na checagem, retorna True (processado)
-        
     registro[SUPABASE_CARIMBO_KEY_DB] = carimbo_formatado
     
     url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
-    headers['Content-Type'] = 'application/json'
-    headers['Prefer'] = 'return=minimal'
+    headers = {
+        'apikey': SUPABASE_KEY,
+        'Authorization': f'Bearer {SUPABASE_KEY}',
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+    }
     
     try:
         response_insert = requests.post(url_insert, headers=headers, json=[registro])
@@ -158,11 +127,10 @@ def enviar_registro_inteligente(registro, tabela_destino):
         return True
 
     except requests.exceptions.RequestException as e:
-        # Se falhar na inserção (por exemplo, erro de tipo de dado ou violação de PK)
         print(f"❌ ERRO CRÍTICO na inserção do Supabase. Resposta: ***{response_insert.text}***. Erro: {e}")
         return False
 
-# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO (Sem Alterações Essenciais) ---
+# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO ---
 
 def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name):
     """
@@ -172,7 +140,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
     
     global SUPABASE_CARIMBO_KEY_DB, SUPABASE_VALOR_KEY, SUPABASE_QUANTIDADE_KEY
 
-    print(f"\n--- Iniciando Migração Inteligente: {aba_origem_name.upper()} para Supabase ({tabela_destino_name}) ---")
+    print(f"\n--- Iniciando Migração SIMPLES: {aba_origem_name.upper()} para Supabase ({tabela_destino_name}) ---")
     
     try:
         planilha_origem = gc.open_by_key(planilha_origem_id).worksheet(aba_origem_name)
@@ -217,7 +185,8 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
             if not carimbo or str(carimbo).strip() == '':
                 continue 
 
-            if registro and enviar_registro_inteligente(registro, tabela_destino_name):
+            # Chamada da nova função
+            if registro and enviar_registro_simples(registro, tabela_destino_name):
                 inseridos_ou_ignorados += 1
             
             time.sleep(0.1) 
@@ -228,7 +197,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
         else:
              print("Nenhum registro foi processado ou encontrado para migração.")
 
-        print("--- MIGRAÇÃO INTELIGENTE CONCLUÍDA ---")
+        print("--- MIGRAÇÃO SIMPLES CONCLUÍDA ---")
 
 
     except gspread.exceptions.WorksheetNotFound as e:

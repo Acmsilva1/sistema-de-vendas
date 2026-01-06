@@ -11,7 +11,9 @@ import requests
 # 1. CONFIGURAÇÕES DO SUPABASE 
 # ===============================================
 SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
-SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOs"
+
+# 🚨 CHAVE PÚBLICA CORRIGIDA 🚨
+SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe" 
 
 # --- CONSTANTES CRÍTICAS (Governança: TUDO MINÚSCULO/SNAKE_CASE) ---
 SUPABASE_CARIMBO_KEY_DB = "carimbo_data_hora" 
@@ -97,7 +99,7 @@ def enviar_registro_simples(registro, tabela_destino):
     carimbo_formatado = registro.get(SUPABASE_CARIMBO_KEY_DB) 
     
     # --- 1. CHECAGEM DE DUPLICIDADE (GET) ---
-    # 🚨 FIX CRÍTICO FINAL: Substitui 'T' por '%20' (URL encoding para espaço) na URL de consulta
+    # FIX FINAL: Substitui 'T' por '%20' (URL encoding para espaço) na URL de consulta
     carimbo_for_query = carimbo_formatado.replace('T', '%20') 
     
     # Filtra pela chave única (carimbo_data_hora)
@@ -118,6 +120,7 @@ def enviar_registro_simples(registro, tabela_destino):
             return True 
             
     except requests.exceptions.RequestException as e:
+        # Se a checagem falhar, ainda tenta a inserção para não perder dados
         print(f"❌ AVISO: Falha na checagem de duplicidade, tentando inserção. Erro: {e}")
 
     # --- 2. INSERÇÃO (POST) ---

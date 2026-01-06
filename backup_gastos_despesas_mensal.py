@@ -2,18 +2,18 @@ import gspread
 import os
 import json
 import sys
-import time # NOVO: Para fazer pausas entre as chamadas (evita sobrecarga da API)
+import time # Para fazer pausas entre as chamadas (evita sobrecarga da API)
 from datetime import datetime
 import requests # Para fazer requisições HTTP (API Supabase)
 
 # ===============================================
-# 1. CONFIGURAÇÕES DO SUPABASE (Hardcoded)
+# 1. CONFIGURAÇÕES DO SUPABASE 
 # ===============================================
 SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
 # --- CONFIGURAÇÕES GERAIS ---
-PLANILHA_ORIGEM_ID = "1LuqYrfR8ry_MqCS93Mpj9_7Vu0i9RUTomJU2n69bEug" # Vendas e Gastos
+PLANILHA_ORIGEM_ID = "1LuqYrfR8ry_MqCS93Mpj9_7Vu0i9RUTomJU2n69bEug" # Vendas e Gastos (Planilha de Origem)
 
 # Mapeamento das Abas: {ABA_ORIGEM (minúscula): TABELA NO SUPABASE}
 MAP_ABAS = {
@@ -22,7 +22,6 @@ MAP_ABAS = {
 }
 
 # MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name)
-# Usando o mapeamento 1:1 'sujo' (necessário por causa do seu Supabase)
 COLUNA_MAP = {
     "Carimbo de data/hora": "Carimbo de data/hora", 
     "PRODUTO": "PRODUTO",
@@ -68,12 +67,8 @@ def enviar_registro_inteligente(registro, tabela_destino):
     Tenta inserir um único registro. Primeiro, checa se o 'Carimbo de data/hora' já existe no Supabase.
     """
     carimbo = registro.get("Carimbo de data/hora")
-    if not carimbo:
-        print("⚠️ Ignorando registro sem 'Carimbo de data/hora' para checagem de duplicidade.")
-        return False
     
     # 1. CHECAGEM (SELECT) - Verifica se o carimbo já existe
-    # A URL de filtro é construída com o nome da coluna (que precisa estar no DB)
     url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?Carimbo de data/hora=eq.{carimbo}"
     
     headers = {
@@ -85,13 +80,12 @@ def enviar_registro_inteligente(registro, tabela_destino):
         response_check = requests.get(url_check, headers=headers)
         response_check.raise_for_status()
         
-        # Se a lista retornada não estiver vazia, o dado existe.
+        # Se a lista retornada não estiver vazia, o dado existe (Duplicado).
         if response_check.json():
             print(f"⏩ IGNORADO: Registro com Carimbo '{carimbo}' já existe na tabela '{tabela_destino}'.")
-            return True # O dado está lá, consideramos processado com sucesso (ignorando)
+            return True 
 
     except requests.exceptions.RequestException as e:
-        # Se falhar na checagem, não insere.
         print(f"❌ ERRO na checagem do Supabase para o Carimbo '{carimbo}': {e}")
         return False 
 
@@ -101,22 +95,22 @@ def enviar_registro_inteligente(registro, tabela_destino):
     headers['Prefer'] = 'return=minimal'
     
     try:
-        # Envia o registro como uma lista de um item (formato de inserção em lote de 1)
         response_insert = requests.post(url_insert, headers=headers, json=[registro])
         response_insert.raise_for_status()
         print(f"✅ INSERIDO: Registro com Carimbo '{carimbo}' inserido em '{tabela_destino}'.")
         return True
 
     except requests.exceptions.RequestException as e:
+        # Se falhar na inserção, imprime a resposta do DB para diagnóstico.
         print(f"❌ ERRO na inserção do Supabase. Resposta: {response_insert.text}. Erro: {e}")
         return False
 
-# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO ---
+# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO (SEM DELEÇÃO DA ORIGEM) ---
 
 def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name):
     """
     Lê do Sheets, processa, envia um por um para o Supabase (com checagem de duplicidade) 
-    e deleta as linhas processadas da origem.
+    e NÃO deleta as linhas da origem.
     """
     print(f"\n--- Iniciando Migração Inteligente: {aba_origem_name.upper()} para Supabase ({tabela_destino_name}) ---")
     
@@ -131,7 +125,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
             print(f"Não há novos dados na aba '{aba_origem_name}' para migrar.")
             return
 
-        sucesso_ou_ignorado_count = 0
+        inseridos_ou_ignorados = 0
         
         # 3. Processamento, Limpeza e Inserção Inteligente (Iteração)
         for linha in dados_para_processar:
@@ -140,32 +134,36 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
             # Constrói o dicionário de registro (payload)
             for idx, valor_sheet in enumerate(linha):
                 header_sheet = headers[idx]
+                
                 if header_sheet in COLUNA_MAP:
                     coluna_supa = COLUNA_MAP[header_sheet]
                     valor_processado = valor_sheet
                     
-                    # Aplica a limpeza de formato APENAS na coluna VALOR
                     if header_sheet.upper() == "VALOR":
                         valor_processado = clean_value(valor_sheet)
 
                     registro[coluna_supa] = valor_processado
 
+            
+            # CHECK CRÍTICO: Se o Forms não preencheu o carimbo (linha vazia) ou se o dado está vazio.
+            carimbo = registro.get("Carimbo de data/hora")
+            if not carimbo or str(carimbo).strip() == '':
+                print("--- LINHA VAZIA IGNORADA ---")
+                continue # Pula para a próxima linha do Sheets.
+
             # Tentativa de Inserção Inteligente
             if registro and enviar_registro_inteligente(registro, tabela_destino_name):
                 # Se a inserção foi bem-sucedida OU o dado já existia (retornou True)
-                sucesso_ou_ignorado_count += 1
+                inseridos_ou_ignorados += 1
             
             # Pequena pausa para evitar sobrecarga da API
             time.sleep(0.1) 
 
 
-        # 4. LIMPEZA/DELEÇÃO DAS LINHAS PROCESSADAS
-        if sucesso_ou_ignorado_count > 0:
-            # Apaga a quantidade de linhas que foram processadas com sucesso (ou ignoradas)
-            # A deleção começa na linha 2 (logo abaixo do cabeçalho) e apaga o número de linhas processadas.
-            planilha_origem.delete_rows(2, sucesso_ou_ignorado_count) 
-            print(f"✅ {sucesso_ou_ignorado_count} linhas processadas (inseridas ou ignoradas) e DELETADAS da aba '{aba_origem_name}'.")
-        
+        # 4. REMOVIDO: Limpeza/Deleção das linhas processadas (A limpeza é manual)
+        if inseridos_ou_ignorados > 0:
+            print(f"✅ {inseridos_ou_ignorados} registros processados (inseridos ou ignorados) na aba '{aba_origem_name}'.")
+
         print("--- MIGRAÇÃO INTELIGENTE CONCLUÍDA ---")
 
 
@@ -180,9 +178,8 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
 def main():
     """Função principal para orquestrar a execução."""
     
-    # Removida a lógica de checagem de data (executa sempre que o GitHub Actions mandar).
+    # Removida a lógica de checagem de data. O script será executado sempre que o GitHub Actions mandar.
     
-    # Verifica se a execução foi forçada manualmente (governança de tempo)
     FORCA_EXECUCAO = os.environ.get('FORCA_EXECUCAO_MANUAL', 'false').lower() == 'true'
     
     if FORCA_EXECUCAO:

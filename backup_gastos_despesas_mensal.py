@@ -12,20 +12,21 @@ import requests
 SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
-# --- CONFIGURAÇÕES GERAIS (NOVA ESTRUTURA PARA MÚLTIPLAS PLANILHAS) ---
+# --- CONFIGURAÇÕES GERAIS (Mapeamento Planilhas e Abas) ---
 
 # Mapeamento CRÍTICO: Define qual PLANILHA_ID e qual ABA_NOME usar para qual TABELA_SUPABASE
+# USANDO OS IDs CORRETOS E O NOME DA ABA DE RESPOSTAS DO FORM: 'Form Responses'
 MAP_MIGRATION = {
     # VENDAS
     "vendas": {
-        "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", # ID CORRETO DE VENDAS
-        "aba_nome": "Form Responses", # <-- CORRIGIDO PARA O NOME PADRÃO DA RESPOSTA DO FORM
+        "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
+        "aba_nome": "Form Responses", 
         "tabela_supa": "vendas"
     }, 
     # DESPESAS (Gastos)
     "gastos": {
-        "planilha_id": "1y2YlMaaVMb0K4XlT7rx5s7X_2iNGL8dMAOSOpX4y_FA", # ID CORRETO DE DESPESAS
-        "aba_nome": "Form Responses", # <-- CORRIGIDO PARA O NOME PADRÃO DA RESPOSTA DO FORM
+        "planilha_id": "1y2YlMaaVMb0K4XlT7rx5s7X_2iNGL8dMAOSOpX4y_FA", 
+        "aba_nome": "Form Responses", 
         "tabela_supa": "despesas"
     } 
 }
@@ -36,26 +37,163 @@ COLUNA_MAP = {
     "PRODUTO": "PRODUTO",
     "QUANTIDADE": "QUANTIDADE",
     "VALOR": "VALOR",
-    # ADICIONAL para VENDAS, caso você use:
-    "SABORES": "PRODUTO",
+    "SABORES": "PRODUTO", # Mapeamento Adicional para Vendas
     "DADOS DO COMPRADOR": "DADOS_DO_COMPRADOR",
     "TOTAL": "TOTAL",
 }
 # -----------------------------------------------------------
 
 
-# --- FUNÇÕES DE CONEXÃO E UTILIDADE (Manter as mesmas) ---
-# ... (autenticar_gspread, clean_value, enviar_registro_inteligente) ...
-# ... (Para não poluir, use as funções completas da minha resposta anterior)
+# --- FUNÇÕES DE CONEXÃO E UTILIDADE (DEFINIDAS ANTES DE main()) ---
 
-# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO (Mantenha o loop de iteração) ---
+def autenticar_gspread():
+    """Autentica o gspread usando a variável de ambiente."""
+    credenciais_json_string = os.environ.get('GSPREAD_SERVICE_ACCOUNT_CREDENTIALS')
+    
+    if not credenciais_json_string:
+        raise Exception("Variável de ambiente GSPREAD_SERVICE_ACCOUNT_CREDENTIALS não encontrada!")
+
+    try:
+        credenciais_dict = json.loads(credenciais_json_string)
+        return gspread.service_account_from_dict(credenciais_dict)
+    except Exception as e:
+        raise Exception(f"Erro ao carregar ou autenticar credenciais JSON: {e}")
+
+def clean_value(valor):
+    """Tradutor cultural: Converte valores com vírgula (R$) para o formato de ponto decimal (DB)."""
+    if not valor or str(valor).strip() == '':
+        return None
+    
+    cleaned = str(valor)
+    # Remove separador de milhares e troca a vírgula pelo ponto
+    cleaned = cleaned.replace('.', '')
+    cleaned = cleaned.replace(',', '.')
+    
+    try:
+        return float(cleaned)
+    except ValueError:
+        return valor  
+
+def enviar_registro_inteligente(registro, tabela_destino):
+    """
+    Tenta inserir um único registro. Primeiro, checa se o 'Carimbo de data/hora' já existe no Supabase.
+    """
+    carimbo = registro.get("Carimbo de data/hora")
+    
+    # 1. CHECAGEM (SELECT) - Verifica se o carimbo já existe
+    url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?Carimbo de data/hora=eq.{carimbo}"
+    
+    headers = {
+        'apikey': SUPABASE_KEY,
+        'Authorization': f'Bearer {SUPABASE_KEY}'
+    }
+
+    try:
+        response_check = requests.get(url_check, headers=headers)
+        response_check.raise_for_status()
+        
+        if response_check.json():
+            print(f"⏩ IGNORADO: Registro com Carimbo '{carimbo}' já existe na tabela '{tabela_destino}'.")
+            return True 
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ ERRO na checagem do Supabase para o Carimbo '{carimbo}': {e}")
+        return False 
+
+    # 2. INSERÇÃO (POST) - Se a checagem não encontrou nada
+    url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
+    headers['Content-Type'] = 'application/json'
+    headers['Prefer'] = 'return=minimal'
+    
+    try:
+        response_insert = requests.post(url_insert, headers=headers, json=[registro])
+        response_insert.raise_for_status()
+        print(f"✅ INSERIDO: Registro com Carimbo '{carimbo}' inserido em '{tabela_destino}'.")
+        return True
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ ERRO na inserção do Supabase. Resposta: {response_insert.text}. Erro: {e}")
+        return False
+
+# --- FUNÇÃO PRINCIPAL DE BACKUP/MIGRAÇÃO (COM DEBUG) ---
 
 def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name):
-    # USE A FUNÇÃO fazer_migracao COMPLETA DA MINHA ÚLTIMA RESPOSTA 
-    # (A que tem os logs DEBUG: e o tratamento de cabeçalho)
-    # ...
-    pass # Substitua por toda a função fazer_migracao corrigida
+    """
+    Lê do Sheets, processa, envia um por um para o Supabase (com checagem de duplicidade) 
+    e NÃO deleta as linhas da origem.
+    """
+    print(f"\n--- Iniciando Migração Inteligente: {aba_origem_name.upper()} para Supabase ({tabela_destino_name}) ---")
     
+    try:
+        planilha_origem = gc.open_by_key(planilha_origem_id).worksheet(aba_origem_name)
+        dados_do_mes = planilha_origem.get_all_values()
+        
+        # FIX CRÍTICO: Limpa os espaços dos cabeçalhos do Sheets
+        headers = [h.strip() for h in dados_do_mes[0]] 
+        dados_para_processar = dados_do_mes[1:] 
+
+        # ⚠️ LINHAS DE DEBUG CRÍTICAS (Para vermos se há dados)
+        print(f"DEBUG: Planilha '{aba_origem_name}' lida. Total de Linhas (Incl. Cabecalho): {len(dados_do_mes)}")
+        print(f"DEBUG: Total de Dados para Processar (Excl. Cabecalho): {len(dados_para_processar)}")
+
+        if not dados_para_processar:
+            print(f"Não há novos dados na aba '{aba_origem_name}' para migrar.")
+            return
+
+        inseridos_ou_ignorados = 0
+        
+        # 3. Processamento, Limpeza e Inserção Inteligente (Iteração)
+        for linha in dados_para_processar:
+            registro = {}
+            
+            # Constrói o dicionário de registro (payload)
+            for idx, valor_sheet in enumerate(linha):
+                
+                # Garante que não tentamos ler o índice fora do limite da linha
+                if idx >= len(headers):
+                    continue
+                    
+                header_sheet = headers[idx]
+                
+                if header_sheet in COLUNA_MAP:
+                    coluna_supa = COLUNA_MAP[header_sheet]
+                    valor_processado = valor_sheet
+                    
+                    if coluna_supa == "VALOR" or coluna_supa == "QUANTIDADE":
+                        valor_processado = clean_value(valor_sheet)
+
+                    registro[coluna_supa] = valor_processado
+
+            
+            # CHECK CRÍTICO: Se a linha é válida (tem o carimbo)
+            carimbo = registro.get("Carimbo de data/hora")
+            if not carimbo or str(carimbo).strip() == '':
+                continue 
+
+            # Tentativa de Inserção Inteligente
+            if registro and enviar_registro_inteligente(registro, tabela_destino_name):
+                inseridos_ou_ignorados += 1
+            
+            time.sleep(0.1) 
+
+
+        # 4. Finalização (Sem deleção)
+        if inseridos_ou_ignorados > 0:
+            print(f"✅ {inseridos_ou_ignorados} registros processados (inseridos ou ignorados) na aba '{aba_origem_name}'.")
+        else:
+             print("Nenhum registro foi processado ou encontrado para migração.")
+
+        print("--- MIGRAÇÃO INTELIGENTE CONCLUÍDA ---")
+
+
+    except gspread.exceptions.WorksheetNotFound as e:
+        print(f"❌ ERRO DE ABA/WORKSHEET: A aba '{aba_origem_name}' não foi encontrada na planilha de ID: {planilha_origem_id}. CONFIRA SE O NOME DA ABA ESTÁ CORRETO (Provavelmente 'Form Responses').")
+        raise RuntimeError(f"Falha na validação da Planilha: {e}") 
+    except Exception as e:
+        print(f"❌ ERRO GRAVE durante a migração de {aba_origem_name} (Planilha ID: {planilha_origem_id}): {e}")
+        raise
+
+
 def main():
     """Função principal para orquestrar a execução."""
     
@@ -81,7 +219,6 @@ def main():
 
 if __name__ == "__main__":
     try:
-        # AS FUNÇÕES QUE FALTAM PRECISAM ESTAR AQUI!
         main()
     except Exception as final_e:
         print(f"\n### FALHA CRÍTICA DO AGENTE ###\n{final_e}")

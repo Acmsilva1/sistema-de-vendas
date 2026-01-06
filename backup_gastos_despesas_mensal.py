@@ -12,23 +12,26 @@ import requests
 SUPABASE_URL = "https://uidlyplhksbwerbdgtys.supabase.co"
 SUPABASE_KEY = "sb_publishable_kUFjQWo7t2d4NccZYi4E9Q_okgJ1DOe"
 
-# --- CONSTANTES CRÍTICAS (Nomes das colunas no Supabase, em snake_case) ---
-# Assumimos que o PostgREST/PostgreSQL converteu tudo para snake_case
-SUPABASE_CARIMBO_KEY = "carimbo_de_data_hora"
-SUPABASE_PRODUTO_KEY = "produto"
-SUPABASE_QUANTIDADE_KEY = "quantidade"
-SUPABASE_VALOR_KEY = "valor"
-SUPABASE_COMPRADOR_KEY = "dados_do_comprador"
-SUPABASE_TOTAL_KEY = "total" # <-- O NOME DA COLUNA QUE ESTAVA DANDO ERRO!
+# --- CONSTANTES CRÍTICAS ---
+# FIX CRÍTICO: Revertendo para o nome EXATO (Case Sensitive) do Sheets.
+# O PostgREST é forçado a usar o nome exato do banco se ele foi criado com aspas duplas.
+SUPABASE_CARIMBO_KEY = "Carimbo de data/hora" 
+SUPABASE_PRODUTO_KEY = "PRODUTO"
+SUPABASE_QUANTIDADE_KEY = "QUANTIDADE"
+SUPABASE_VALOR_KEY = "VALOR"
+SUPABASE_COMPRADOR_KEY = "DADOS DO COMPRADOR"
+SUPABASE_TOTAL_KEY = "TOTAL" # Revertendo o TOTAL que estava quebrando
 
 # --- CONFIGURAÇÕES GERAIS (Mapeamento Planilhas e Abas) ---
 
 MAP_MIGRATION = {
+    # VENDAS
     "vendas": {
         "planilha_id": "1ygApI7DemPMEjfRcZmR1LVU9ofHP-dkL71m59-USnuY", 
         "aba_nome": "VENDAS", 
         "tabela_supa": "vendas"
     }, 
+    # DESPESAS (Gastos)
     "gastos": {
         "planilha_id": "1y2YlMaaVMb0K4XlT7rx5s7X_2iNGL8dMAOSOpX4y_FA", 
         "aba_nome": "despesas", 
@@ -36,15 +39,15 @@ MAP_MIGRATION = {
     } 
 }
 
-# MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name - AGORA TUDO EM SNAKE_CASE)
+# MAPA DE TRADUÇÃO (Sheets Column Header -> Supabase Column Name - USANDO O NOME ORIGINAL DO SHEETS)
 COLUNA_MAP = {
     "Carimbo de data/hora": SUPABASE_CARIMBO_KEY, 
     "PRODUTO": SUPABASE_PRODUTO_KEY,
     "QUANTIDADE": SUPABASE_QUANTIDADE_KEY,
     "VALOR": SUPABASE_VALOR_KEY,
-    "SABORES": SUPABASE_PRODUTO_KEY, # Mapeamento Adicional para Vendas
+    "SABORES": SUPABASE_PRODUTO_KEY, 
     "DADOS DO COMPRADOR": SUPABASE_COMPRADOR_KEY,
-    "TOTAL": SUPABASE_TOTAL_KEY, # <-- FIX CRÍTICO AQUI
+    "TOTAL": SUPABASE_TOTAL_KEY, 
 }
 # -----------------------------------------------------------
 
@@ -104,7 +107,7 @@ def enviar_registro_inteligente(registro, tabela_destino):
     if not carimbo_formatado:
          return True 
 
-    # 1. CHECAGEM (SELECT) - Checamos duplicidade, usando o nome de coluna em snake_case
+    # 1. CHECAGEM (SELECT) - Usamos o nome ORIGINAL da coluna no Supabase
     url_check = f"{SUPABASE_URL}/rest/v1/{tabela_destino}?{SUPABASE_CARIMBO_KEY}=eq.{carimbo_formatado}"
     
     headers = {
@@ -121,15 +124,14 @@ def enviar_registro_inteligente(registro, tabela_destino):
             return True 
 
     except requests.exceptions.RequestException as e:
-        # Se falhou, mas não foi por erro 404 (não encontrado) nem 409 (conflito), 
-        # é provável que seja o 400 de formato de query. Apenas avisamos e tentamos inserir.
         if 'response_check' in locals() and response_check.status_code == 400:
             print(f"⚠️ AVISO: Falha na checagem do Supabase (código 400) para o Carimbo '{carimbo_formatado}'. Tentando inserção...")
         else:
             print(f"❌ ERRO na checagem do Supabase. Erro: {e}")
-            return False # Se for erro grave, melhor parar.
+            return False 
         
     # 2. INSERÇÃO (POST) - Payload
+    # O payload deve ter as chaves com o nome EXATO da coluna
     registro[SUPABASE_CARIMBO_KEY] = carimbo_formatado
     
     url_insert = f"{SUPABASE_URL}/rest/v1/{tabela_destino}"
@@ -137,14 +139,12 @@ def enviar_registro_inteligente(registro, tabela_destino):
     headers['Prefer'] = 'return=minimal'
     
     try:
-        # O payload (registro) agora usa todas as chaves em snake_case
         response_insert = requests.post(url_insert, headers=headers, json=[registro])
         response_insert.raise_for_status()
         print(f"✅ INSERIDO: Registro com Carimbo '{carimbo_formatado}' inserido em '{tabela_destino}'.")
         return True
 
     except requests.exceptions.RequestException as e:
-        # Aqui, se der erro, é porque o payload (registro) está errado ou faltam permissões.
         print(f"❌ ERRO CRÍTICO na inserção do Supabase. Resposta: ***{response_insert.text}***. Erro: {e}")
         return False
 
@@ -192,7 +192,7 @@ def fazer_migracao(gc, planilha_origem_id, aba_origem_name, tabela_destino_name)
                     coluna_supa = COLUNA_MAP[header_sheet]
                     valor_processado = valor_sheet
                     
-                    if coluna_supa != SUPABASE_CARIMBO_KEY and (coluna_supa == SUPABASE_VALOR_KEY or coluna_supa == SUPABASE_QUANTIDADE_KEY):
+                    if coluna_supa != SUPABASE_CARIMBO_KEY and (coluna_supa == SUPABASE_VALOR_KEY or coluna_supa == SUPABASE_QUANTIDADE_KEY or coluna_supa == SUPABASE_TOTAL_KEY):
                         valor_processado = clean_value(valor_sheet)
 
                     registro[coluna_supa] = valor_processado

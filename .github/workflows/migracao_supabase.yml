@@ -15,10 +15,10 @@ on:
           - 'false'
   
   # 2. Execução agendada (A CADA 2 HORAS)
-  # Cron Expression: '0 */2 * * *'
-  # Significa: No minuto 0, a cada 2 horas, em qualquer dia/mês/dia da semana.
+  # Cron Expression: '0 */1 * * *'
+  # Significa: No minuto 0, a cada 1 horas, em qualquer dia/mês/dia da semana.
   schedule:
-    - cron: '0 */2 * * *' 
+    - cron: '0 */1 * * *' 
 
 jobs:
   run_migration:
